@@ -1,3 +1,8 @@
+n2kd (0.2.4) unstable; urgency=low
+
+  * Added debug package for n2kd-bin
+
+ -- EngSaS - Joachim Langenbach <info@engsas.de>  Mon, 24 Apr 2017 13:45:00 +0200
 n2kd (0.2.3) unstable; urgency=low
 
   * Merged improved compiler flag handling from master

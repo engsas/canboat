@@ -16,6 +16,15 @@ Description: canboat binary applicaions
  Provides n2kd, actisense-seral, nmea0183-serial, analyzer, candump2analyzer,
  command-group-function, iptee, request-group-function, socketcan-writer
 
+Package: n2kd-bin-dbg
+Architecture: any
+Depends: n2kd-bin (= ${binary:Version}), ${misc:Depends}
+Description: debugging symbols for n2kd-bin
+ Provides n2kd, actisense-seral, nmea0183-serial, analyzer, candump2analyzer,
+ command-group-function, iptee, request-group-function, socketcan-writer
+ .
+ This package contains the debugging symbols for n2kd-bin
+
 Package: n2kd-config
 Architecture: all
 Depends: ${misc:Depends}
