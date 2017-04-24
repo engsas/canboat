@@ -18,6 +18,8 @@ Description: canboat binary applicaions
 
 Package: n2kd-bin-dbg
 Architecture: any
+Section: debug
+Priority extra
 Depends: n2kd-bin (= ${binary:Version}), ${misc:Depends}
 Description: debugging symbols for n2kd-bin
  Provides n2kd, actisense-seral, nmea0183-serial, analyzer, candump2analyzer,

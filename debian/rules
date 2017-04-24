@@ -7,4 +7,4 @@ export PREFIX=/usr
 
 .PHONY: override_dh_strip
 override_dh_strip:
-        dh_strip --dbg-package=n2kd-bin-dbg
+	dh_strip --dbg-package=n2kd-bin-dbg
