@@ -1,4 +1,4 @@
 usr/bin/list-product-information
 usr/bin/n2kd_monitor
 usr/bin/n2kd_nmea_monitor
-n2kd_monitor.service lib/systemd/system/
+n2kd/n2kd_monitor.service lib/systemd/system/

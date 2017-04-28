@@ -1,3 +1,10 @@
+n2kd (0.2.5) unstable; urgency=low
+
+  * Merged master improvements (socketcan support in n2kd_monitor)
+  * Switched to original n2kd_monitor.service file
+    (fixed from master)
+
+ -- EngSaS - Joachim Langenbach <info@engsas.de>  Fri, 28 Apr 2017 13:30:00 +0200
 n2kd (0.2.4) unstable; urgency=low
 
   * Added debug package for n2kd-bin
