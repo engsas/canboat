@@ -1,4 +1,5 @@
 /*
+
 (C) 2009-2015, Kees Verruijt, Harlingen, The Netherlands.
 
 This file is part of CANboat.
@@ -18,15 +19,4 @@ along with CANboat.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
-#include <signal.h>
-#include <sys/select.h>
-#include "common.h"
-#include "nmea0183.h"
-
-extern uint16_t port;
-extern char *   srcFilter;
-extern bool     rateLimit;
-extern uint32_t protocol;
-extern int      debug;
-
-extern int64_t epoch(void);
+#define VERSION "1.2.1"

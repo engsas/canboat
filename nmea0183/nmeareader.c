@@ -23,30 +23,27 @@ along with CANboat.  If not, see <http://www.gnu.org/licenses/>.
 
 #define BUFFER_SIZE 900
 
-static int readonly = 0;
+static int  readonly = 0;
 static bool isFile;
 
-enum ReadyDescriptor
+int main(int argc, char **argv)
 {
-  FD1_Ready = 0x0001,
-  FD2_Ready = 0x0002
-};
-
-static enum ReadyDescriptor isready(int fd1, int fd2);
-
-int main(int argc, char ** argv)
-{
-  int r;
-  int handle;
+  int            r;
+  int            handle;
   struct termios attr;
-  char * device = 0;
-  struct stat statbuf;
-  int pid = 0;
+  char *         device = 0;
+  struct stat    statbuf;
+  int            pid = 0;
 
   setProgName(argv[0]);
 
   while (argc > 1)
   {
+    if (strcasecmp(argv[1], "-version") == 0)
+    {
+      printf("%s\n", VERSION);
+      exit(0);
+    }
     if (strcasecmp(argv[1], "-r") == 0)
     {
       readonly = 1;
@@ -74,10 +71,11 @@ int main(int argc, char ** argv)
 
   if (!device)
   {
-    fprintf(stderr, "Usage: nmea0183-serial [-r] [-d] device\n\n"
-    "-r : read-only, do not pass stdin to stdout\n"
-    "-d : debug mode\n\n"
-    "Example: nmea0183-serial /dev/ttyUSB0\n\n"COPYRIGHT);
+    fprintf(stderr,
+            "Usage: nmea0183-serial [-r] [-d] <device> | -version\n\n"
+            "-r : read-only, do not pass stdin to stdout\n"
+            "-d : debug mode\n\n"
+            "Example: nmea0183-serial /dev/ttyUSB0\n\n" COPYRIGHT);
     exit(1);
   }
 
@@ -102,11 +100,11 @@ retry:
     logDebug("Device is a serial port, set the attributes.\n");
 
     memset(&attr, 0, sizeof(attr));
-    attr.c_cflag = B38400 | CS8 | CLOCAL | CREAD;
-    attr.c_iflag = IGNPAR;
-    attr.c_oflag = 0;
-    attr.c_lflag = 0;
-    attr.c_cc[VMIN] = 0;
+    attr.c_cflag     = B38400 | CS8 | CLOCAL | CREAD;
+    attr.c_iflag     = IGNPAR;
+    attr.c_oflag     = 0;
+    attr.c_lflag     = 0;
+    attr.c_cc[VMIN]  = 0;
     attr.c_cc[VTIME] = 1;
     tcflush(handle, TCIFLUSH);
     tcsetattr(handle, TCSANOW, &attr);
@@ -114,14 +112,14 @@ retry:
 
   for (;;)
   {
-    char msg[BUFFER_SIZE];
-    size_t msgLen;
+    char                 msg[BUFFER_SIZE];
+    size_t               msgLen;
     enum ReadyDescriptor r;
-    int b;
+    int                  b;
 
-    r = isready(handle, readonly ? -1 : 0);
+    r = isReady(handle, readonly ? INVALID_SOCKET : STDIN, INVALID_SOCKET, 0);
 
-    if ((r & FD1_Ready) > 0)
+    if ((r & FD1_ReadReady) > 0)
     {
       b = read(handle, msg, sizeof(msg));
       if (b < 0)
@@ -130,13 +128,13 @@ retry:
       }
       else if (b > 0)
       {
-        if (write(1, msg, b) < b)
+        if (write(STDOUT, msg, b) < b)
         {
           break;
         }
       }
     }
-    if ((r & FD2_Ready) > 0)
+    if ((r & FD2_ReadReady) > 0)
     {
       b = read(0, msg, sizeof(msg));
       if (b < 0)
@@ -145,7 +143,7 @@ retry:
       }
       else if (b > 0)
       {
-        if (write(1, msg, b) < b)
+        if (write(STDOUT, msg, b) < b)
         {
           break;
         }
@@ -159,47 +157,4 @@ retry:
 
   close(handle);
   return 0;
-}
-
-static enum ReadyDescriptor isready(int fd1, int fd2)
-{
-  fd_set fds;
-  struct timeval timeout;
-  int setsize;
-  enum ReadyDescriptor r;
-
-  FD_ZERO(&fds);
-  if (fd1 >= 0)
-  {
-    FD_SET(fd1, &fds);
-  }
-  if (fd2 >= 0)
-  {
-    FD_SET(fd2, &fds);
-  }
-  timeout.tv_sec = 10;
-  timeout.tv_usec = 0;
-  if (fd1 > fd2)
-  {
-    setsize = fd1 + 1;
-  }
-  else
-  {
-    setsize = fd2 + 1;
-  }
-  r = select(setsize, &fds, 0, 0, &timeout);
-  if (!r)
-  {
-    return 0;
-  }
-  r = 0;
-  if (fd1 >= 0 && FD_ISSET(fd1, &fds))
-  {
-    r |= FD1_Ready;
-  }
-  if (fd2 >= 0 && FD_ISSET(fd2, &fds))
-  {
-    r |= FD2_Ready;
-  }
-  return r;
 }

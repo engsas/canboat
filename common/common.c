@@ -19,54 +19,60 @@ along with CANboat.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
-
 #include "common.h"
 
-static const char * logLevels[] =
-{ "FATAL"
-, "ERROR"
-, "INFO"
-, "DEBUG"
-};
+static const char *logLevels[] = {"FATAL", "ERROR", "INFO", "DEBUG"};
 
 static LogLevel logLevel = LOGLEVEL_INFO;
 
-static char * progName;
+static char *progName;
 
 #ifndef WIN32
 
-const char * now(char str[DATE_LENGTH])
+uint64_t getNow(void)
 {
   struct timeval tv;
-  time_t t;
-  struct tm tm;
-  int msec;
-  size_t len;
 
   if (gettimeofday(&tv, (void *) 0) == 0)
   {
-    t = tv.tv_sec;
-    msec = tv.tv_usec / 1000L;
-    gmtime_r(&t, &tm);
-    strftime(str, DATE_LENGTH - 5, "%Y-%m-%dT%H:%M:%S", &tm);
-    len = strlen(str);
-    snprintf(str + len, DATE_LENGTH - len, ".%3.3dZ", msec);
-  }
-  else
-  {
-    strcpy(str, "?");
-  }
+    uint64_t t    = tv.tv_sec;
+    uint64_t msec = tv.tv_usec / 1000L;
 
+    return t * 1000L + msec;
+  }
+  return 0L;
+}
+
+void storeTimestamp(char str[DATE_LENGTH], uint64_t when)
+{
+  time_t    t;
+  struct tm tm;
+  int       msec;
+  size_t    len;
+
+  t    = when / 1000L;
+  msec = when % 1000L;
+  gmtime_r(&t, &tm);
+  strftime(str, DATE_LENGTH - 5, "%Y-%m-%dT%H:%M:%S", &tm);
+  len = strlen(str);
+  snprintf(str + len, DATE_LENGTH - len, ".%3.3dZ", msec);
+}
+
+const char *now(char str[DATE_LENGTH])
+{
+  uint64_t now = getNow();
+
+  storeTimestamp(str, now);
   return (const char *) str;
 }
 
 #else
 
-const char * now(char str[DATE_LENGTH])
+const char *now(char str[DATE_LENGTH])
 {
   struct _timeb timebuffer;
-  struct tm tm;
-  size_t len;
+  struct tm     tm;
+  size_t        len;
 
   _ftime_s(&timebuffer);
   gmtime_s(&tm, &timebuffer.time);
@@ -79,7 +85,7 @@ const char * now(char str[DATE_LENGTH])
 
 #endif
 
-static int logBase(LogLevel level, const char * format, va_list ap)
+static int logBase(LogLevel level, const char *format, va_list ap)
 {
   char strTmp[DATE_LENGTH];
 
@@ -93,43 +99,56 @@ static int logBase(LogLevel level, const char * format, va_list ap)
   return vfprintf(stderr, format, ap);
 }
 
-int logInfo(const char * format, ...)
+int logInfo(const char *format, ...)
 {
+  int     ret;
   va_list ap;
   va_start(ap, format);
 
-  return logBase(LOGLEVEL_INFO, format, ap);
+  ret = logBase(LOGLEVEL_INFO, format, ap);
+  va_end(ap);
+
+  return ret;
 }
 
-int logDebug(const char * format, ...)
+int logDebug(const char *format, ...)
 {
+  int     ret;
   va_list ap;
   va_start(ap, format);
 
-  return logBase(LOGLEVEL_DEBUG, format, ap);
+  ret = logBase(LOGLEVEL_DEBUG, format, ap);
+  va_end(ap);
+
+  return ret;
 }
 
-int logError(const char * format, ...)
+int logError(const char *format, ...)
 {
+  int     ret;
   va_list ap;
   va_start(ap, format);
 
-  return logBase(LOGLEVEL_ERROR, format, ap);
+  ret = logBase(LOGLEVEL_ERROR, format, ap);
+  va_end(ap);
+
+  return ret;
 }
 
-void logAbort(const char * format, ...)
+void logAbort(const char *format, ...)
 {
   va_list ap;
   va_start(ap, format);
 
   logBase(LOGLEVEL_FATAL, format, ap);
+  va_end(ap);
   exit(2);
 }
 
-void die(const char * t)
+void die(const char *t)
 {
-  int e = errno;
-  char * s = 0;
+  int   e = errno;
+  char *s = 0;
 
   if (e)
   {
@@ -152,7 +171,12 @@ void setLogLevel(LogLevel level)
   logDebug("Loglevel now %d\n", logLevel);
 }
 
-void setProgName(char * name)
+bool isLogLevelEnabled(LogLevel level)
+{
+  return logLevel >= level;
+}
+
+void setProgName(char *name)
 {
   progName = strrchr(name, '/');
   if (!progName)
@@ -167,45 +191,6 @@ void setProgName(char * name)
   {
     progName++;
   }
-}
-
-void sbAppendData(StringBuffer * sb, const void * data, size_t len)
-{
-  while (len + sb->len + 1 >= sb->alloc)
-  {
-    if (!sb->alloc)
-    {
-      sb->alloc = 64;
-    }
-    else
-    {
-      sb->alloc *= 2;
-    }
-  }
-  if (!sb->data)
-  {
-    sb->data = malloc(sb->alloc);
-  }
-  else
-  {
-    sb->data = realloc(sb->data, sb->alloc);
-  }
-  if (!sb->data)
-  {
-    die("Out of memory");
-  }
-  memcpy(sb->data + sb->len, data, len);
-  sb->len += len;
-  sb->data[sb->len] = 0;
-  logDebug("Appended %u bytes to %p len %u\n", len, sb->data, sb->len);
-  //logDebug("+ [%1.*s]\n", len, data);
-  //logDebug("= [%1.*s]\n", sb->len, sb->data);
-}
-
-void sbAppendString(StringBuffer * sb, const char * string)
-{
-  size_t len = strlen(string);
-  sbAppendData(sb, string, len);
 }
 
 static void sbReserve(StringBuffer *const sb, size_t len)
@@ -239,7 +224,7 @@ static void sbReserve(StringBuffer *const sb, size_t len)
   sb->alloc = nextSize;
 }
 
-static void sbEnsureCapacity(StringBuffer *const sb, size_t len)
+void sbEnsureCapacity(StringBuffer *const sb, size_t len)
 {
   len++; // Make room for termination zero byte
   if (!sb->data || (len >= sb->alloc))
@@ -248,11 +233,61 @@ static void sbEnsureCapacity(StringBuffer *const sb, size_t len)
   }
 }
 
+void sbDelete(StringBuffer *sb, size_t start, size_t end)
+{
+  if (end >= sb->len)
+  {
+    sbTruncate(sb, start);
+  }
+  else if (start < sb->len && sb->data)
+  {
+    end = CB_MIN(sb->len, end);
+    if (end < sb->len)
+    {
+      memmove(sb->data + start, sb->data + end, sb->len - end);
+    }
+    sb->len -= end - start;
+    sbTerminate(sb);
+  }
+}
+
+void sbAppendData(StringBuffer *sb, const void *data, size_t len)
+{
+  sbEnsureCapacity(sb, sb->len + len);
+  memcpy(sb->data + sb->len, data, len);
+  sb->len += len;
+  sb->data[sb->len] = 0;
+}
+
+char hexDigit(uint8_t b)
+{
+  return (b > 9) ? (char) b + 'a' - 10 : (char) b + '0';
+}
+
+void sbAppendEncodeHex(StringBuffer *sb, const void *data, size_t len, char separator)
+{
+  sbEnsureCapacity(sb, sb->len + len * 3);
+
+  for (; len > 0; len--, data++)
+  {
+    sbAppendFormat(sb, "%c%c", hexDigit(((uint8_t *) data)[0] >> 4), hexDigit(((uint8_t *) data)[0] & 0x0f));
+    if (len > 1 && separator != '\0')
+    {
+      sbAppendData(sb, &separator, 1);
+    }
+  }
+}
+
+void sbAppendString(StringBuffer *sb, const char *string)
+{
+  size_t len = strlen(string);
+  sbAppendData(sb, string, len);
+}
 
 void sbAppendFormatV(StringBuffer *const sb, const char *const format, va_list ap)
 {
-  int n;
-  size_t len;
+  int     n;
+  size_t  len;
   va_list ap2;
 
   len = 128;
@@ -304,10 +339,10 @@ void sbAppendFormat(StringBuffer *const sb, const char *const format, ...)
 /*
  * Retrieve a value out of a JSON styled message.
  */
-int getJSONValue( const char * message, const char * fieldName, char * value, size_t len )
+int getJSONValue(const char *message, const char *fieldName, char *value, size_t len)
 {
-  const char * loc = message + 1;
-  size_t fieldLen = strlen(fieldName);
+  const char *loc      = message + 1;
+  size_t      fieldLen = strlen(fieldName);
 
   for (;;)
   {
@@ -353,27 +388,27 @@ int getJSONValue( const char * message, const char * fieldName, char * value, si
       loc++;
       switch (*loc)
       {
-      case 'b':
-        *value++ = '\b';
-        loc++;
-        break;
-      case 'f':
-        *value++ = '\f';
-        loc++;
-        break;
-      case 'n':
-        *value++ = '\n';
-        loc++;
-        break;
-      case 'r':
-        *value++ = '\r';
-        loc++;
-        break;
-      case 't':
-        *value++ = '\t';
-        loc++;
-        break;
-      case 'u':
+        case 'b':
+          *value++ = '\b';
+          loc++;
+          break;
+        case 'f':
+          *value++ = '\f';
+          loc++;
+          break;
+        case 'n':
+          *value++ = '\n';
+          loc++;
+          break;
+        case 'r':
+          *value++ = '\r';
+          loc++;
+          break;
+        case 't':
+          *value++ = '\t';
+          loc++;
+          break;
+        case 'u':
         {
           unsigned int n;
           sscanf(loc, "%4x", &n);
@@ -382,8 +417,8 @@ int getJSONValue( const char * message, const char * fieldName, char * value, si
         }
         break;
 
-      default:
-        *value++ = *loc++;
+        default:
+          *value++ = *loc++;
       }
     }
     else if (*loc == '"')
@@ -400,6 +435,20 @@ int getJSONValue( const char * message, const char * fieldName, char * value, si
   return 1;
 }
 
+char *sbSearchChar(const StringBuffer *const in, char c)
+{
+  char * p = sbGet(in);
+  size_t i;
+
+  for (i = 0; i < in->len; i++)
+  {
+    if (p[i] == c)
+    {
+      return p + i;
+    }
+  }
+  return 0;
+}
 
 /*
  * Table 1 - Mapping of ISO 11783 into CAN's Arbitration and Control Fields
@@ -456,7 +505,7 @@ DLC# - Data Length Code Bit #n *CAN Defined Bit, Unchanged in ISO 11783
 (r) - recessive bit
 */
 
-void getISO11783BitsFromCanId(unsigned int id, unsigned int * prio, unsigned int * pgn, unsigned int * src, unsigned int * dst)
+void getISO11783BitsFromCanId(unsigned int id, unsigned int *prio, unsigned int *pgn, unsigned int *src, unsigned int *dst)
 {
   unsigned char PF = (unsigned char) (id >> 16);
   unsigned char PS = (unsigned char) (id >> 8);
@@ -495,7 +544,6 @@ void getISO11783BitsFromCanId(unsigned int id, unsigned int * prio, unsigned int
       *pgn = (DP << 16) + (PF << 8) + PS;
     }
   }
-
 }
 
 /*
@@ -503,24 +551,30 @@ void getISO11783BitsFromCanId(unsigned int id, unsigned int * prio, unsigned int
 */
 unsigned int getCanIdFromISO11783Bits(unsigned int prio, unsigned int pgn, unsigned int src, unsigned int dst)
 {
-  unsigned int canId = src | 0x80000000U;  // src bits are the lowest ones of the CAN ID. Also set the highest bit to 1 as n2k uses only extended frames (EFF bit).
+  unsigned int canId
+      = (src & 0xff) | 0x80000000U; // src bits are the lowest ones of the CAN ID. Also set the highest bit to 1 as n2k uses
+  // only extended frames (EFF bit).
 
-  if((unsigned char)pgn == 0) {  // PDU 1 (assumed if 8 lowest bits of the PGN are 0)
-    canId += dst << 8;
-    canId += pgn << 8;
-    canId += prio << 26;
-  } else {                       // PDU 2
-    canId += pgn << 8;
-    canId += prio << 26;
+  unsigned int PF = (pgn >> 8) & 0xff;
+
+  if (PF < 240)
+  { // PDU 1
+    canId |= (dst & 0xff) << 8;
+    canId |= (pgn << 8);
   }
+  else
+  { // PDU 2
+    canId |= pgn << 8;
+  }
+  canId |= prio << 26;
 
   return canId;
 }
 
-static void resolve_address(const char * url, char ** host, const char ** service)
+static void resolve_address(const char *url, char **host, const char **service)
 {
   const char *s;
-  size_t hostlen;
+  size_t      hostlen;
 
   if (strncmp(url, "tcp:", STRSIZE("tcp:")) == 0)
   {
@@ -560,18 +614,18 @@ static void resolve_address(const char * url, char ** host, const char ** servic
   }
 }
 
-SOCKET open_socket_stream(const char * url)
+SOCKET open_socket_stream(const char *url)
 {
-  int sockfd = INVALID_SOCKET;
-  int n;
+  int             sockfd = INVALID_SOCKET;
+  int             n;
   struct addrinfo hints, *res, *addr;
-  char * host;
-  const char * service;
+  char *          host;
+  const char *    service;
 
   resolve_address(url, &host, &service);
 
   memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_UNSPEC;
+  hints.ai_family   = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
 
   n = getaddrinfo(host, service, &hints, &res);
@@ -625,7 +679,7 @@ uint8_t scanNibble(char c)
   return 16;
 }
 
-int scanHex(char ** p, uint8_t * m)
+int scanHex(char **p, uint8_t *m)
 {
   uint8_t hi, lo;
 
@@ -648,4 +702,193 @@ int scanHex(char ** p, uint8_t * m)
   *m = hi << 4 | lo;
   /* printf("(b=%02X,p=%p) ", *m, *p); */
   return 0;
+}
+
+int isReady(int fd1, int fd2, int fd3, int timeout)
+{
+  fd_set         fds;
+  fd_set         fdw;
+  struct timeval waitfor;
+  int            setsize;
+  int            r;
+  int            ret = 0;
+
+  FD_ZERO(&fds);
+  FD_ZERO(&fdw);
+  if (fd1 > INVALID_SOCKET)
+  {
+    FD_SET(fd1, &fds);
+  }
+  if (fd2 > INVALID_SOCKET)
+  {
+    FD_SET(fd2, &fds);
+  }
+  if (fd3 > INVALID_SOCKET)
+  {
+    FD_SET(fd3, &fdw);
+  }
+  waitfor.tv_sec  = timeout ? timeout : 10;
+  waitfor.tv_usec = 0;
+  setsize         = CB_MAX(CB_MAX(fd1, fd2), fd3) + 1;
+  r               = select(setsize, &fds, &fdw, 0, &waitfor);
+  if (r < 0)
+  {
+    logAbort("I/O error; restart by quit\n");
+  }
+  if (r > 0)
+  {
+    if (fd1 > INVALID_SOCKET && FD_ISSET(fd1, &fds))
+    {
+      ret |= FD1_ReadReady;
+    }
+    if (fd2 > INVALID_SOCKET && FD_ISSET(fd2, &fds))
+    {
+      ret |= FD2_ReadReady;
+    }
+    if (fd3 > INVALID_SOCKET && FD_ISSET(fd3, &fdw))
+    {
+      ret |= FD3_WriteReady;
+    }
+  }
+  if (!ret && timeout)
+  {
+    logAbort("Timeout %ld seconds; restart by quit\n", timeout);
+  }
+  return ret;
+}
+
+/*
+ * Send a message to a serial device.
+ *
+ * The buffer to the device may be slow or limited in size,
+ * cater for this.
+ *
+ */
+int writeSerial(int handle, const uint8_t *data, size_t len)
+{
+  int     retryCount = 5;
+  ssize_t written;
+
+  do
+  {
+    written = write(handle, data, len);
+    if (written != -1)
+    {
+      data += written;
+      len -= written;
+    }
+    else if (errno == EAGAIN)
+    {
+      retryCount--;
+      usleep(25000);
+    }
+    else
+    {
+      break;
+    }
+  } while (len > 0 && retryCount >= 0);
+
+  if (written == -1)
+  {
+    logError("Write failed: %s\n", strerror(errno));
+    return -1;
+  }
+  else if (len > 0)
+  {
+    logError("Write timeout: %s\n", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
+bool parseInt(const char **msg, int *value, int defValue)
+{
+  char *end;
+
+  *value = strtol(*msg, &end, 10);
+  if (end == *msg)
+  {
+    *value = defValue;
+  }
+  *msg = end;
+  if (*end == ',')
+  {
+    *msg = end + 1;
+  }
+  else if (*end != '\0')
+  {
+    return false;
+  }
+  return true;
+}
+
+bool parseConst(const char **msg, const char *str)
+{
+  if (strncmp(*msg, str, strlen(str)) == 0)
+  {
+    *msg += strlen(str);
+    return true;
+  }
+  return false;
+}
+
+bool parseFastFormat(StringBuffer *in, RawMessage *msg)
+{
+  unsigned int prio;
+  unsigned int pgn;
+  unsigned int src;
+  unsigned int dst;
+  unsigned int bytes;
+
+  char *       p;
+  int          i;
+  int          b;
+  unsigned int byt;
+  int          r;
+
+  p = strchr(sbGet(in), '\n');
+  if (!p)
+  {
+    return false;
+  }
+
+  // Skip the timestamp
+  p = strchr(sbGet(in), ',');
+  if (!p)
+  {
+    return false;
+  }
+
+  r = sscanf(p, ",%u,%u,%u,%u,%u,%n", &prio, &pgn, &src, &dst, &bytes, &i);
+  if (r == 5)
+  {
+    // now store the timestamp, unchanged
+    memset(msg->timestamp, 0, sizeof msg->timestamp);
+    memcpy(msg->timestamp, sbGet(in), CB_MAX(p - sbGet(in), sizeof msg->timestamp - 1));
+
+    msg->prio = prio;
+    msg->pgn  = pgn;
+    msg->src  = src;
+    msg->dst  = dst;
+    msg->len  = bytes;
+
+    p += i - 1;
+
+    for (b = 0; b < CB_MIN(bytes, FASTPACKET_MAX_SIZE); b++)
+    {
+      if ((sscanf(p, ",%x%n", &byt, &i) == 1) && (byt < 256))
+      {
+        msg->data[b] = byt;
+      }
+      else
+      {
+        logError("Unable to parse incoming message '%s' data byte %u\n", sbGet(in), b);
+        return false;
+      }
+      p += i;
+    }
+    return true;
+  }
+  logError("Unable to parse incoming message '%s', r = %d\n", sbGet(in), r);
+  return false;
 }

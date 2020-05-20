@@ -1,5 +1,6 @@
+<?php
 #
-# (C) 2009-2015, Kees Verruijt, Harlingen, The Netherlands.
+# (C) 2009-2020, Kees Verruijt, Harlingen, The Netherlands.
 #
 # This file is part of CANboat.
 #
@@ -17,21 +18,28 @@
 # along with CANboat.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-PLATFORM=$(shell uname | tr '[A-Z]' '[a-z]')-$(shell uname -m)
-TARGETDIR=../rel/$(PLATFORM)
-N2KD=$(TARGETDIR)/n2kd
-N2KD_MONITOR=$(TARGETDIR)/n2kd_monitor
-TARGETS=$(N2KD) $(N2KD_MONITOR)
-LDLIBS+=-lm
+  function getCanboatDefault($variable, $default)
+  {
+    $fd = @fopen('/etc/default/canboat', 'r');
+    if ($fd and is_resource($fd))
+    {
+      while (!feof($fd))
+      {
+	$s = fgets($fd, 8192);
+        $matches = array();
+        if (preg_match('/^ *([A-Za-z0-9_]+) *= *(.+)/', $s, $matches))
+        {
+          if (strtolower($matches[1]) == strtolower($variable))
+          {
+	    return eval('return '.$matches[2].';');
+          }
+        }
+      }
+      fclose($fd);
+    }
+    return $default;
+  } 
 
-all: $(TARGETS)
 
-$(N2KD): main.c nmea0183.c gps_ais.c gps_ais.h nmea0183.h ../common/common.c ../common/common.h Makefile
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $(N2KD) -I../common main.c gps_ais.c nmea0183.c ../common/common.c $(LDLIBS$(LDLIBS-$(@)))
-
-$(N2KD_MONITOR): n2kd_monitor
-	cp n2kd_monitor $(N2KD_MONITOR)
-
-clean:
-	-rm -f $(N2KD) *.elf *.gdb
+?>
 

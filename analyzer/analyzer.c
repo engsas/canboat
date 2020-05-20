@@ -21,19 +21,31 @@ along with CANboat.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
-#define  GLOBALS
-#include "common.h"
+#define GLOBALS
 #include "analyzer.h"
+#include "common.h"
 
 enum RawFormats
 {
+  RAWFORMAT_UNKNOWN,
   RAWFORMAT_PLAIN,
   RAWFORMAT_FAST,
   RAWFORMAT_AIRMAR,
-  RAWFORMAT_CHETCO
+  RAWFORMAT_CHETCO,
+  RAWFORMAT_GARMIN_CSV1,
+  RAWFORMAT_GARMIN_CSV2,
+  RAWFORMAT_YDWG02
 };
 
-enum RawFormats format = RAWFORMAT_PLAIN;
+enum RawFormats format = RAWFORMAT_UNKNOWN;
+
+enum MultiPackets
+{
+  MULTIPACKETS_COALESCED,
+  MULTIPACKETS_SEPARATE
+};
+
+enum MultiPackets multiPackets = MULTIPACKETS_SEPARATE;
 
 enum GeoFormats
 {
@@ -44,10 +56,10 @@ enum GeoFormats
 
 typedef struct
 {
-  size_t lastFastPacket;
-  size_t size;
-  size_t allocSize;
-  uint8_t * data;
+  size_t   lastFastPacket;
+  size_t   size;
+  size_t   allocSize;
+  uint8_t *data;
 } Packet;
 
 typedef struct
@@ -55,62 +67,69 @@ typedef struct
   Packet packetList[ARRAY_SIZE(pgnList)];
 } DevicePackets;
 
-DevicePackets * device[256];
-char *manufacturer[1 << 12];
+DevicePackets *device[256];
+char *         manufacturer[1 << 12];
 
-bool showRaw = false;
-bool showData = false;
-bool showBytes = false;
-bool showJson = false;
-bool showSI = false; // Output everything in strict SI units
-char * sep = " ";
-char closingBraces[8]; // } and ] chars to close sentence in JSON mode, otherwise empty string
-enum GeoFormats showGeo = GEO_DD;
-int onlyPgn = 0;
-int onlySrc = -1;
-int clockSrc = -1;
-size_t heapSize = 0;
+bool            showRaw       = false;
+bool            showData      = false;
+bool            showBytes     = false;
+bool            showJson      = false;
+bool            showJsonValue = false;
+bool            showSI        = false; // Output everything in strict SI units
+char *          sep           = " ";
+char            closingBraces[8]; // } and ] chars to close sentence in JSON mode, otherwise empty string
+enum GeoFormats showGeo  = GEO_DD;
+int             onlyPgn  = 0;
+int             onlySrc  = -1;
+int             clockSrc = -1;
+size_t          heapSize = 0;
 
 int g_variableFieldRepeat[2]; // Actual number of repetitions
 int g_variableFieldIndex;
 
-static void fillManufacturers(void);
-static void fillFieldCounts(void);
-static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t startBit, size_t bits);
+static enum RawFormats detectFormat(const char *msg);
+static bool            printCanFormat(RawMessage *msg);
+static bool            printNumber(char *fieldName, Field *field, uint8_t *data, size_t startBit, size_t bits);
+static void            camelCase(bool upperCamelCase);
+static void            explain(void);
+static void            explainXML(void);
+static void            fillFieldCounts(void);
+static void            fillManufacturers(void);
+static void            printCanRaw(RawMessage *msg);
 
-void initialize(void);
-void printCanRaw(RawMessage * msg);
-bool printCanFormat(RawMessage * msg);
-void explain(void);
-void explainXML(void);
-void camelCase(bool upperCamelCase);
-
-void usage(char ** argv, char ** av)
+void usage(char **argv, char **av)
 {
   printf("Unknown or invalid argument %s\n", av[0]);
-  printf("Usage: %s [[-raw] [-json [-camel | -upper-camel]] [-data] [-debug] [-d] [-q] [-si] [-geo {dd|dm|dms}] [-src <src> | <pgn>]] ["
+  printf("Usage: %s [[-raw] [-json [-nv] [-camel | -upper-camel]] [-data] [-debug] [-d] [-q] [-si] [-geo {dd|dm|dms}] [-src <src> "
+         "| <pgn>]] ["
 #ifndef SKIP_SETSYSTEMCLOCK
          "-clocksrc <src> | "
 #endif
-         "-explain | -explain-xml [-upper-camel]]\n", argv[0]);
+         "-explain | -explain-xml [-upper-camel]] | -version\n",
+         argv[0]);
   exit(1);
 }
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
-  int r;
-  char msg[2000];
-  FILE * file = stdin;
-  int ac = argc;
-  char ** av = argv;
-  bool doExplainXML = false;
-  bool doExplain = false;
+  int    r;
+  char   msg[2000];
+  FILE * file         = stdin;
+  int    ac           = argc;
+  char **av           = argv;
+  bool   doExplainXML = false;
+  bool   doExplain    = false;
 
   setProgName(argv[0]);
 
-  for ( ; ac > 1; ac--, av++)
+  for (; ac > 1; ac--, av++)
   {
-    if (strcasecmp(av[1], "-explain-xml") == 0)
+    if (strcasecmp(av[1], "-version") == 0)
+    {
+      printf("%s\n", VERSION);
+      exit(0);
+    }
+    else if (strcasecmp(av[1], "-explain-xml") == 0)
     {
       doExplainXML = true;
     }
@@ -150,7 +169,7 @@ int main(int argc, char ** argv)
       }
       else
       {
-        usage(argv, av);
+        usage(argv, av + 1);
       }
       ac--;
       av++;
@@ -175,6 +194,10 @@ int main(int argc, char ** argv)
     {
       showJson = true;
     }
+    else if (strcasecmp(av[1], "-nv") == 0)
+    {
+      showJsonValue = true;
+    }
     else if (strcasecmp(av[1], "-data") == 0)
     {
       showData = true;
@@ -185,14 +208,14 @@ int main(int argc, char ** argv)
       ac--;
       av++;
     }
-# ifndef SKIP_SETSYSTEMCLOCK
+#ifndef SKIP_SETSYSTEMCLOCK
     else if (ac > 2 && strcasecmp(av[1], "-clocksrc") == 0)
     {
       clockSrc = strtol(av[2], 0, 10);
       ac--;
       av++;
     }
-# endif
+#endif
     else if (ac > 2 && strcasecmp(av[1], "-file") == 0)
     {
       file = fopen(av[2], "r");
@@ -213,7 +236,7 @@ int main(int argc, char ** argv)
       }
       else
       {
-        usage(argv, av);
+        usage(argv, av + 1);
       }
     }
   }
@@ -244,9 +267,9 @@ int main(int argc, char ** argv)
 
   while (fgets(msg, sizeof(msg) - 1, file))
   {
-    RawMessage m;
-    unsigned int prio, pgn, dst, src, len, junk;
-    char * p;
+    RawMessage   m;
+    unsigned int prio, pgn, dst, src, junk;
+    char *       p;
     unsigned int i;
 
     if (*msg == 0 || *msg == '\n')
@@ -254,101 +277,141 @@ int main(int argc, char ** argv)
       continue;
     }
 
-    if (format != RAWFORMAT_CHETCO && msg[0] == '$' && strncmp(msg, "$PCDIN", 6) == 0)
+    if (format == RAWFORMAT_UNKNOWN)
     {
-      logDebug("Detected Chetco protocol with all data on one line\n");
-      format = RAWFORMAT_CHETCO;
-    }
-
-    if (format != RAWFORMAT_CHETCO)
-    {
-      if (format != RAWFORMAT_AIRMAR)
+      format = detectFormat(msg);
+      if (format == RAWFORMAT_GARMIN_CSV1 || format == RAWFORMAT_GARMIN_CSV2)
       {
-        p = strchr(msg, ',');
-      }
-      else
-      {
-        p = strchr(msg, ' ');
-      }
-
-      if (!p)
-      {
-        p = strchr(msg, ' ');
-        if (p && (p[1] == '-' || p[2] == '-'))
-        {
-          if (format != RAWFORMAT_AIRMAR)
-          {
-            logDebug("Detected Airmar protocol with all data on one line\n");
-          }
-          format = RAWFORMAT_AIRMAR;
-        }
-      }
-      if (!p || p >= msg + sizeof(m.timestamp) - 1)
-      {
-        logError("Error reading message, scanning timestamp from %s", msg);
-        if (!showJson) fprintf(stdout, "%s", msg);
+        // Skip first line containing header line
         continue;
       }
     }
 
-    if (format == RAWFORMAT_PLAIN)
+    switch (format)
     {
-      r = sscanf( p
-        , ",%*u,%*u,%*u,%*u,%u"
-        ",%*x,%*x,%*x,%*x,%*x,%*x,%*x,%*x,%*x"
-        , &len
-      );
-      if (r < 1)
-      {
-        logError("Error reading message, scanned %u from %s", r, msg);
-        if (!showJson) fprintf(stdout, "%s", msg);
-        continue;
-      }
-      if(len <= 8)
-      {
-        if(parseRawFormatPlain(msg, &m, showJson))
+      case RAWFORMAT_PLAIN:
+        r = parseRawFormatPlain(msg, &m, showJson);
+        if (r >= 0)
         {
-          continue;  // Some error occurred -> skip line
+          break;
         }
-      }
-      else
-      {
-        logDebug("Detected Fast protocol with all data on one line\n");
-        format = RAWFORMAT_FAST;
-      }
-    }
-    if (format == RAWFORMAT_FAST)
-    {
-      if(parseRawFormatFast(msg, &m, showJson))
-      {
-        continue;  // Some error occurred -> skip line
-      }
-    }
-    else if (format == RAWFORMAT_AIRMAR)
-    {
-      if(parseRawFormatAirmar(msg, &m, showJson))
-      {
-        continue;  // Some error occurred -> skip line
-      }
-    }
-    else if (format == RAWFORMAT_CHETCO)
-    {
-      if(parseRawFormatChetco(msg, &m, showJson))
-      {
-        continue;  // Some error occurred -> skip line
-      }
+        // Else fall through to fast!
+
+      case RAWFORMAT_FAST:
+        r = parseRawFormatFast(msg, &m, showJson);
+        break;
+
+      case RAWFORMAT_AIRMAR:
+        r = parseRawFormatAirmar(msg, &m, showJson);
+        break;
+
+      case RAWFORMAT_CHETCO:
+        r = parseRawFormatChetco(msg, &m, showJson);
+        break;
+
+      case RAWFORMAT_GARMIN_CSV1:
+      case RAWFORMAT_GARMIN_CSV2:
+        r = parseRawFormatGarminCSV(msg, &m, showJson, format == RAWFORMAT_GARMIN_CSV2);
+        break;
+
+      case RAWFORMAT_YDWG02:
+        r = parseRawFormatYDWG02(msg, &m, showJson);
+        break;
+
+      default:
+        logError("Unknown message format\n");
+        exit(1);
     }
 
-    printCanFormat(&m);
-    printCanRaw(&m);
+    if (r == 0)
+    {
+      printCanFormat(&m);
+      printCanRaw(&m);
+    }
+    else
+    {
+      logError("Unknown message error %d: %s\n", r, msg);
+    }
   }
 
   return 0;
 }
 
-char * getSep()
+enum RawFormats detectFormat(const char *msg)
 {
-  char * s = sep;
+  char *       p;
+  int          r;
+  unsigned int len;
+
+  if (msg[0] == '$' && strncmp(msg, "$PCDIN", 6) == 0)
+  {
+    logInfo("Detected Chetco protocol with all data on one line\n");
+    multiPackets = MULTIPACKETS_COALESCED;
+    return RAWFORMAT_CHETCO;
+  }
+
+  if (strcmp(msg, "Sequence #,Timestamp,PGN,Name,Manufacturer,Remote Address,Local Address,Priority,Single Frame,Size,Packet\n")
+      == 0)
+  {
+    logInfo("Detected Garmin CSV protocol with relative timestamps\n");
+    multiPackets = MULTIPACKETS_COALESCED;
+    return RAWFORMAT_GARMIN_CSV1;
+  }
+
+  if (strcmp(msg,
+             "Sequence #,Month_Day_Year_Hours_Minutes_Seconds_msTicks,PGN,Processed PGN,Name,Manufacturer,Remote Address,Local "
+             "Address,Priority,Single Frame,Size,Packet\n")
+      == 0)
+  {
+    logInfo("Detected Garmin CSV protocol with absolute timestamps\n");
+    multiPackets = MULTIPACKETS_COALESCED;
+    return RAWFORMAT_GARMIN_CSV2;
+  }
+
+  p = strchr(msg, ' ');
+  if (p && (p[1] == '-' || p[2] == '-'))
+  {
+    logInfo("Detected Airmar protocol with all data on one line\n");
+    multiPackets = MULTIPACKETS_COALESCED;
+    return RAWFORMAT_AIRMAR;
+  }
+
+  p = strchr(msg, ',');
+  if (p)
+  {
+    r = sscanf(p, ",%*u,%*u,%*u,%*u,%u,%*x,%*x,%*x,%*x,%*x,%*x,%*x,%*x,%*x", &len);
+    if (r < 1)
+    {
+      return RAWFORMAT_UNKNOWN;
+    }
+    if (len > 8)
+    {
+      logInfo("Detected normal format with all data on one line\n");
+      multiPackets = MULTIPACKETS_COALESCED;
+      return RAWFORMAT_FAST;
+    }
+    logInfo("Assuming normal format with one line per packet\n");
+    multiPackets = MULTIPACKETS_SEPARATE;
+    return RAWFORMAT_PLAIN;
+  }
+
+  {
+    int  a, b, c, d, f;
+    char e;
+    if (sscanf(msg, "%d:%d:%d.%d %c %02X ", &a, &b, &c, &d, &e, &f) == 6 && (e == 'R' || e == 'T'))
+    {
+      logInfo("Detected YDWG-02 protocol with one line per packet\n");
+      multiPackets = MULTIPACKETS_SEPARATE;
+      return RAWFORMAT_YDWG02;
+    }
+  }
+
+  return RAWFORMAT_UNKNOWN;
+}
+
+char *getSep()
+{
+  char *s = sep;
 
   if (showJson)
   {
@@ -375,7 +438,8 @@ static void fillManufacturers(void)
 {
   size_t i;
 
-  for (i = 0; i < ARRAY_SIZE(manufacturer); i++) {
+  for (i = 0; i < ARRAY_SIZE(manufacturer); i++)
+  {
     manufacturer[i] = 0;
   }
   for (i = 0; i < ARRAY_SIZE(companyList); i++)
@@ -390,13 +454,14 @@ static void fillFieldCounts(void)
 
   for (i = 0; i < ARRAY_SIZE(pgnList); i++)
   {
-    for (j = 0; pgnList[i].fieldList[j].name && j < ARRAY_SIZE(pgnList[i].fieldList); j++);
+    for (j = 0; pgnList[i].fieldList[j].name && j < ARRAY_SIZE(pgnList[i].fieldList); j++)
+      ;
     if (j == ARRAY_SIZE(pgnList[i].fieldList))
     {
       logError("Internal error: PGN %d '%s' does not have correct fieldlist.\n", pgnList[i].pgn, pgnList[i].description);
       exit(2);
     }
-    if (j == 0 && pgnList[i].known)
+    if (j == 0 && pgnList[i].complete == PACKET_COMPLETE)
     {
       logError("Internal error: PGN %d '%s' does not have fields.\n", pgnList[i].pgn, pgnList[i].description);
       exit(2);
@@ -405,36 +470,36 @@ static void fillFieldCounts(void)
   }
 }
 
-char mbuf[8192];
-char * mp = mbuf;
+char  mbuf[8192];
+char *mp = mbuf;
 
-void mprintf(const char * format, ...)
+void mprintf(const char *format, ...)
 {
   va_list ap;
-  int remain;
+  int     remain;
 
   va_start(ap, format);
   remain = sizeof(mbuf) - (mp - mbuf) - 1;
-  if (remain > 0) {
+  if (remain > 0)
+  {
     mp += vsnprintf(mp, remain, format, ap);
   }
   va_end(ap);
 }
-
 
 void mreset(void)
 {
   mp = mbuf;
 }
 
-void mwrite(FILE * stream)
+void mwrite(FILE *stream)
 {
   fwrite(mbuf, sizeof(char), mp - mbuf, stream);
   fflush(stream);
   mreset();
 }
 
-void printCanRaw(RawMessage * msg)
+static void printCanRaw(RawMessage *msg)
 {
   size_t i;
   FILE * f = stdout;
@@ -465,13 +530,17 @@ void printCanRaw(RawMessage * msg)
  * We print in the way set by the config. Default is DMS. DD is useful for Google Maps.
  */
 
-static bool printLatLon(char * name, double resolution, uint8_t * data, size_t bytes)
+static bool printLatLon(char *name, double resolution, uint8_t *data, size_t bytes)
 {
   uint64_t absVal;
-  int64_t value;
+  int64_t  value;
+  size_t   i;
 
   value = 0;
-  memcpy(&value, data, bytes);
+  for (i = 0; i < bytes; i++)
+  {
+    value |= ((uint64_t) data[i]) << (i * 8);
+  }
   if (bytes == 4 && ((data[3] & 0x80) > 0))
   {
     value |= UINT64_C(0xffffffff00000000);
@@ -485,7 +554,7 @@ static bool printLatLon(char * name, double resolution, uint8_t * data, size_t b
   {
     if (showBytes)
     {
-      mprintf("(%"PRIx64" = %"PRId64") ", value, value);
+      mprintf("(%" PRIx64 " = %" PRId64 ") ", value, value);
     }
 
     value /= INT64_C(1000000000);
@@ -494,7 +563,7 @@ static bool printLatLon(char * name, double resolution, uint8_t * data, size_t b
 
   if (showBytes)
   {
-    mprintf("(%"PRId64") ", value);
+    mprintf("(%" PRId64 ") ", value);
   }
 
   if (showGeo == GEO_DD)
@@ -514,32 +583,31 @@ static bool printLatLon(char * name, double resolution, uint8_t * data, size_t b
   {
     /* One degree = 10e6 */
 
-    uint64_t degrees = (absVal / RES_LAT_LONG_PRECISION);
+    uint64_t degrees   = (absVal / RES_LAT_LONG_PRECISION);
     uint64_t remainder = (absVal % RES_LAT_LONG_PRECISION);
-    double minutes = (remainder * 60) / (double) RES_LAT_LONG_PRECISION;
+    double   minutes   = (remainder * 60) / (double) RES_LAT_LONG_PRECISION;
 
-    mprintf((showJson ? "%s\"%s\":\"%02u&deg; %6.3f %c\"" : "%s %s = %02ud %6.3f %c")
-           , getSep(), name, (uint32_t) degrees, minutes
-           , ((resolution == RES_LONGITUDE)
-              ? ((value >= 0) ? 'E' : 'W')
-              : ((value >= 0) ? 'N' : 'S')
-             )
-           );
+    mprintf((showJson ? "%s\"%s\":\"%02u&deg; %6.3f %c\"" : "%s %s = %02ud %6.3f %c"),
+            getSep(),
+            name,
+            (uint32_t) degrees,
+            minutes,
+            ((resolution == RES_LONGITUDE) ? ((value >= 0) ? 'E' : 'W') : ((value >= 0) ? 'N' : 'S')));
   }
   else
   {
-    uint32_t degrees = (uint32_t) (absVal / RES_LAT_LONG_PRECISION);
-    uint32_t remainder = (uint32_t) (absVal % RES_LAT_LONG_PRECISION);
-    uint32_t minutes = (remainder * 60) / RES_LAT_LONG_PRECISION;
-    double seconds = (((uint64_t) remainder * 3600) / (double) RES_LAT_LONG_PRECISION) - (60 * minutes);
+    uint32_t degrees   = (uint32_t)(absVal / RES_LAT_LONG_PRECISION);
+    uint32_t remainder = (uint32_t)(absVal % RES_LAT_LONG_PRECISION);
+    uint32_t minutes   = (remainder * 60) / RES_LAT_LONG_PRECISION;
+    double   seconds   = (((uint64_t) remainder * 3600) / (double) RES_LAT_LONG_PRECISION) - (60 * minutes);
 
-    mprintf( (showJson ? "%s\"%s\":\"%02u&deg;%02u&rsquo;%06.3f&rdquo;%c\"": "%s %s = %02ud %02u' %06.3f\"%c")
-           , getSep(), name, degrees, minutes, seconds
-           , ((resolution == RES_LONGITUDE)
-              ? ((value >= 0) ? 'E' : 'W')
-              : ((value >= 0) ? 'N' : 'S')
-             )
-           );
+    mprintf((showJson ? "%s\"%s\":\"%02u&deg;%02u&rsquo;%06.3f&rdquo;%c\"" : "%s %s = %02ud %02u' %06.3f\"%c"),
+            getSep(),
+            name,
+            degrees,
+            minutes,
+            seconds,
+            ((resolution == RES_LONGITUDE) ? ((value >= 0) ? 'E' : 'W') : ((value >= 0) ? 'N' : 'S')));
     if (showJson)
     {
       double dd = (double) value / (double) RES_LAT_LONG_PRECISION;
@@ -549,11 +617,11 @@ static bool printLatLon(char * name, double resolution, uint8_t * data, size_t b
   return true;
 }
 
-static bool printDate(char * name, uint16_t d)
+static bool printDate(char *name, uint16_t d)
 {
-  char buf[sizeof("2008.03.10") + 1];
-  time_t t;
-  struct tm * tm;
+  char       buf[sizeof("2008.03.10") + 1];
+  time_t     t;
+  struct tm *tm;
 
   if (d >= 0xfffd)
   {
@@ -565,7 +633,7 @@ static bool printDate(char * name, uint16_t d)
     mprintf("(date %hx = %hd) ", d, d);
   }
 
-  t = d * 86400;
+  t  = d * 86400;
   tm = gmtime(&t);
   if (!tm)
   {
@@ -583,12 +651,12 @@ static bool printDate(char * name, uint16_t d)
   return true;
 }
 
-static bool printTime(char * name, uint32_t t)
+static bool printTime(char *name, uint32_t t)
 {
-  uint32_t hours;
-  uint32_t minutes;
-  uint32_t seconds;
-  uint32_t units;
+  uint32_t       hours;
+  uint32_t       minutes;
+  uint32_t       seconds;
+  uint32_t       units;
   const uint32_t unitspersecond = 10000;
 
   if (t >= 0xfffffffd)
@@ -601,12 +669,11 @@ static bool printTime(char * name, uint32_t t)
     mprintf("(time %x = %u) ", t, t);
   }
 
-
   seconds = t / unitspersecond;
-  units = t % unitspersecond;
+  units   = t % unitspersecond;
   minutes = seconds / 60;
   seconds = seconds % 60;
-  hours = minutes / 60;
+  hours   = minutes / 60;
   minutes = minutes % 60;
 
   if (showJson)
@@ -634,7 +701,7 @@ static bool printTime(char * name, uint32_t t)
   return true;
 }
 
-static bool printTemperature(char * name, uint32_t t, uint32_t bits, double resolution)
+static bool printTemperature(char *name, uint32_t t, uint32_t bits, double resolution)
 {
   double k = t * resolution;
   double c = k - 273.15;
@@ -670,11 +737,11 @@ static bool printTemperature(char * name, uint32_t t, uint32_t bits, double reso
   return true;
 }
 
-static bool printPressure(char * name, uint32_t v, Field * field)
+static bool printPressure(char *name, uint32_t v, Field *field)
 {
   int32_t pressure;
-  double bar;
-  double psi;
+  double  bar;
+  double  psi;
 
   if (field->size <= 16)
   {
@@ -703,17 +770,17 @@ static bool printPressure(char * name, uint32_t v, Field * field)
   {
     switch (field->units[0])
     {
-    case 'h':
-    case 'H':
-      pressure *= 100;
-      break;
-    case 'k':
-    case 'K':
-      pressure *= 1000;
-      break;
-    case 'd':
-      pressure /= 10;
-      break;
+      case 'h':
+      case 'H':
+        pressure *= 100;
+        break;
+      case 'k':
+      case 'K':
+        pressure *= 1000;
+        break;
+      case 'd':
+        pressure /= 10;
+        break;
     }
   }
 
@@ -722,7 +789,7 @@ static bool printPressure(char * name, uint32_t v, Field * field)
 
   if (showJson)
   {
-    mprintf("%s\"%s\":%"PRId32"", getSep(), name, pressure);
+    mprintf("%s\"%s\":%" PRId32 "", getSep(), name, pressure);
   }
   else
   {
@@ -749,14 +816,14 @@ static void print6BitASCIIChar(uint8_t b)
   putchar(c);
 }
 
-static bool print6BitASCIIText(char * name, uint8_t * data, size_t startBit, size_t bits)
+static bool print6BitASCIIText(char *name, uint8_t *data, size_t startBit, size_t bits)
 {
-  uint8_t value = 0;
-  uint8_t maxValue = 0;
-  uint8_t bitMask = 1 << startBit;
+  uint8_t  value        = 0;
+  uint8_t  maxValue     = 0;
+  uint8_t  bitMask      = 1 << startBit;
   uint64_t bitMagnitude = 1;
-  size_t bit;
-  char buf[128];
+  size_t   bit;
+  char     buf[128];
 
   if (showJson)
   {
@@ -792,7 +859,7 @@ static bool print6BitASCIIText(char * name, uint8_t * data, size_t startBit, siz
     if (bit % 6 == 5)
     {
       print6BitASCIIChar(value);
-      value = 0;
+      value        = 0;
       bitMagnitude = 1;
     }
   }
@@ -803,14 +870,14 @@ static bool print6BitASCIIText(char * name, uint8_t * data, size_t startBit, siz
   return true;
 }
 
-static bool printHex(char * name, uint8_t * data, size_t startBit, size_t bits)
+static bool printHex(char *name, uint8_t *data, size_t startBit, size_t bits)
 {
-  uint8_t value = 0;
-  uint8_t maxValue = 0;
-  uint8_t bitMask = 1 << startBit;
+  uint8_t  value        = 0;
+  uint8_t  maxValue     = 0;
+  uint8_t  bitMask      = 1 << startBit;
   uint64_t bitMagnitude = 1;
-  size_t bit;
-  char buf[128];
+  size_t   bit;
+  char     buf[128];
 
   if (showBytes)
   {
@@ -851,7 +918,7 @@ static bool printHex(char * name, uint8_t * data, size_t startBit, size_t bits)
     if (bit % 8 == 7)
     {
       mprintf("%02x ", value);
-      value = 0;
+      value        = 0;
       bitMagnitude = 1;
     }
   }
@@ -862,14 +929,14 @@ static bool printHex(char * name, uint8_t * data, size_t startBit, size_t bits)
   return true;
 }
 
-static bool printDecimal(char * name, uint8_t * data, size_t startBit, size_t bits)
+static bool printDecimal(char *name, uint8_t *data, size_t startBit, size_t bits)
 {
-  uint8_t value = 0;
-  uint8_t maxValue = 0;
-  uint8_t bitMask = 1 << startBit;
+  uint8_t  value        = 0;
+  uint8_t  maxValue     = 0;
+  uint8_t  bitMask      = 1 << startBit;
   uint64_t bitMagnitude = 1;
-  size_t bit;
-  char buf[128];
+  size_t   bit;
+  char     buf[128];
 
   if (showBytes)
   {
@@ -913,7 +980,7 @@ static bool printDecimal(char * name, uint8_t * data, size_t startBit, size_t bi
       {
         mprintf("%02u", value);
       }
-      value = 0;
+      value        = 0;
       bitMagnitude = 1;
     }
   }
@@ -924,11 +991,9 @@ static bool printDecimal(char * name, uint8_t * data, size_t startBit, size_t bi
   return true;
 }
 
-
-
-static bool printVarNumber(char * fieldName, Pgn * pgn, uint32_t refPgn, Field * field, uint8_t * data, size_t startBit, size_t * bits)
+static bool printVarNumber(char *fieldName, Pgn *pgn, uint32_t refPgn, Field *field, uint8_t *data, size_t startBit, size_t *bits)
 {
-  Field * refField;
+  Field *refField;
   size_t size, bytes;
 
   /* PGN 126208 contains variable field length.
@@ -952,27 +1017,26 @@ static bool printVarNumber(char * fieldName, Pgn * pgn, uint32_t refPgn, Field *
     return printNumber(fieldName, field, data, startBit, refField->size);
   }
 
-  logError("Pgn %d Field %s: cannot derive variable length from PGN %d field # %d\n"
-          , pgn->pgn, field->name, refPgn, data[-1]);
+  logError("Pgn %d Field %s: cannot derive variable length from PGN %d field # %d\n", pgn->pgn, field->name, refPgn, data[-1]);
   *bits = 8; /* Gotta assume something */
   return false;
 }
 
-static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t startBit, size_t bits)
+static bool printNumber(char *fieldName, Field *field, uint8_t *data, size_t startBit, size_t bits)
 {
-  bool ret = false;
+  bool    ret = false;
   int64_t value;
   int64_t maxValue;
   int64_t reserved;
-  double a;
+  double  a;
 
   extractNumber(field, data, startBit, bits, &value, &maxValue);
 
   /* There are max five reserved values according to ISO 11873-9 (that I gather from indirect sources)
    * but I don't yet know which datafields reserve the reserved values.
    */
-#define DATAFIELD_UNKNOWN   (0)
-#define DATAFIELD_ERROR     (-1)
+#define DATAFIELD_UNKNOWN (0)
+#define DATAFIELD_ERROR (-1)
 #define DATAFIELD_RESERVED1 (-2)
 #define DATAFIELD_RESERVED2 (-3)
 #define DATAFIELD_RESERVED3 (-4)
@@ -1000,13 +1064,14 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
   {
     if (field->units && field->units[0] == '=')
     {
-      char lookfor[20];
-      char * s;
+      char  lookfor[20];
+      char *s;
 
-      sprintf(lookfor, "=%"PRId64, value);
+      sprintf(lookfor, "=%" PRId64, value);
       if (strcmp(lookfor, field->units) != 0)
       {
-        if (showBytes) logError("Field %s value %"PRId64" does not match %s\n", fieldName, value, field->units + 1);
+        if (showBytes)
+          logError("Field %s value %" PRId64 " does not match %s\n", fieldName, value, field->units + 1);
         return false;
       }
       s = field->description;
@@ -1026,17 +1091,21 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
 
     else if (field->resolution == RES_LOOKUP && field->units)
     {
-      char lookfor[20];
-      char * s, * e;
+      char  lookfor[20];
+      char *s, *e;
 
-      sprintf(lookfor, ",%"PRId64"=", value);
+      sprintf(lookfor, ",%" PRId64 "=", value);
       s = strstr(field->units, lookfor);
       if (s)
       {
         s += strlen(lookfor);
         e = strchr(s, ',');
         e = e ? e : s + strlen(s);
-        if (showJson)
+        if (showJsonValue)
+        {
+          mprintf("%s\"%s\":{\"value\":%" PRId64 ",\"name\":\"%.*s\"}", getSep(), fieldName, value, (int) (e - s), s);
+        }
+        else if (showJson)
         {
           mprintf("%s\"%s\":\"%.*s\"", getSep(), fieldName, (int) (e - s), s);
         }
@@ -1049,24 +1118,24 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
       {
         if (showJson)
         {
-          mprintf("%s\"%s\":\"%"PRId64"\"", getSep(), fieldName, value);
+          mprintf("%s\"%s\":\"%" PRId64 "\"", getSep(), fieldName, value);
         }
         else
         {
-          mprintf("%s %s = %"PRId64"", getSep(), fieldName, value);
+          mprintf("%s %s = %" PRId64 "", getSep(), fieldName, value);
         }
       }
     }
 
     else if (field->resolution == RES_BITFIELD && field->units)
     {
-      char lookfor[20];
-      char * s, * e;
+      char         lookfor[20];
+      char *       s, *e;
       unsigned int bit;
-      uint64_t bitValue;
-      char sep;
+      uint64_t     bitValue;
+      char         sep;
 
-      logDebug("RES_BITFIELD value %"PRIx64"\n", value);
+      logDebug("RES_BITFIELD value %" PRIx64 "\n", value);
       if (showJson)
       {
         mprintf("%s\"%s\": ", getSep(), fieldName);
@@ -1080,7 +1149,7 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
 
       for (bitValue = 1, bit = 0; bitValue <= maxValue; (bitValue *= 2), bit++)
       {
-        logDebug("RES_BITFIELD is bit %u value %"PRIx64" set %d\n", bit, bitValue, (value & value) >= 0);
+        logDebug("RES_BITFIELD is bit %u value %" PRIx64 " set %d\n", bit, bitValue, (value & value) >= 0);
         if ((value & bitValue) != 0)
         {
           sprintf(lookfor, ",%u=", bit);
@@ -1103,7 +1172,7 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
           }
           else
           {
-            mprintf("%c\"%"PRIu64"\"", sep, bitValue);
+            mprintf("%c\"%" PRIu64 "\"", sep, bitValue);
             sep = ',';
           }
         }
@@ -1125,17 +1194,17 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
     {
       if (showJson)
       {
-        mprintf("%s\"%s\":\"%"PRId64"\"", getSep(), fieldName, value);
+        mprintf("%s\"%s\":\"%" PRId64 "\"", getSep(), fieldName, value);
       }
       else
       {
-        mprintf("%s %s = 0x%"PRIx64, getSep(), fieldName, value);
+        mprintf("%s %s = 0x%" PRIx64, getSep(), fieldName, value);
       }
     }
     else if (field->resolution == RES_MANUFACTURER)
     {
-      char * m = 0;
-      char unknownManufacturer[30];
+      char *m = 0;
+      char  unknownManufacturer[30];
 
       if (value > 0 && value < ARRAY_SIZE(manufacturer))
       {
@@ -1143,11 +1212,20 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
       }
       if (!m)
       {
-        sprintf(unknownManufacturer, "Unknown Manufacturer %"PRId64, value);
+        if (showJson)
+        {
+          mprintf("%s \"%s\":%" PRId64, getSep(), fieldName, value);
+          return true;
+        }
+        sprintf(unknownManufacturer, "Unknown Manufacturer %" PRId64, value);
         m = unknownManufacturer;
       }
 
-      if (showJson)
+      if (showJsonValue)
+      {
+        mprintf("%s \"%s\":{\"value\":%" PRId64 ",\"name\":\"%s\"}", getSep(), fieldName, value, m);
+      }
+      else if (showJson)
       {
         mprintf("%s \"%s\": \"%s\"", getSep(), fieldName, m);
       }
@@ -1158,23 +1236,22 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
     }
     else
     {
-
       if (field->resolution == RES_INTEGER)
       {
         if (showJson)
         {
-          mprintf("%s\"%s\":%"PRId64"", getSep(), fieldName, value);
+          mprintf("%s\"%s\":%" PRId64 "", getSep(), fieldName, value);
         }
         else
         {
-          mprintf("%s %s = %"PRId64, getSep(), fieldName, value);
+          mprintf("%s %s = %" PRId64, getSep(), fieldName, value);
         }
       }
       else
       {
-        int precision;
-        double r;
-        const char * units = field->units;
+        int         precision;
+        double      r;
+        const char *units = field->units;
 
         a = (double) value * field->resolution;
 
@@ -1217,7 +1294,14 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
 
           // Many more to follow, but pgn.h is not yet complete enough...
         }
-
+        else if (units && !showSI)
+        {
+          if (strcmp(units, "C") == 0)
+          {
+            a /= 3600.0; // 3600 C = 1 Ah
+            units = "Ah";
+          }
+        }
 
         if (showJson)
         {
@@ -1247,23 +1331,23 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
     {
       switch (value - maxValue)
       {
-      case DATAFIELD_UNKNOWN:
-        mprintf("%s %s = Unknown", getSep(), fieldName);
-        break;
-      case DATAFIELD_ERROR:
-        mprintf("%s %s = ERROR", getSep(), fieldName);
-        break;
-      case DATAFIELD_RESERVED1:
-        mprintf("%s %s = RESERVED1", getSep(), fieldName);
-        break;
-      case DATAFIELD_RESERVED2:
-        mprintf("%s %s = RESERVED2", getSep(), fieldName);
-        break;
-      case DATAFIELD_RESERVED3:
-        mprintf("%s %s = RESERVED3", getSep(), fieldName);
-        break;
-      default:
-        mprintf("%s %s = Unhandled value %ld (%ld)", getSep(), fieldName, value, value - maxValue);
+        case DATAFIELD_UNKNOWN:
+          mprintf("%s %s = Unknown", getSep(), fieldName);
+          break;
+        case DATAFIELD_ERROR:
+          mprintf("%s %s = ERROR", getSep(), fieldName);
+          break;
+        case DATAFIELD_RESERVED1:
+          mprintf("%s %s = RESERVED1", getSep(), fieldName);
+          break;
+        case DATAFIELD_RESERVED2:
+          mprintf("%s %s = RESERVED2", getSep(), fieldName);
+          break;
+        case DATAFIELD_RESERVED3:
+          mprintf("%s %s = RESERVED3", getSep(), fieldName);
+          break;
+        default:
+          mprintf("%s %s = Unhandled value %ld max %ld (%ld)", getSep(), fieldName, value, maxValue, value - maxValue);
       }
     }
   }
@@ -1273,18 +1357,17 @@ static bool printNumber(char * fieldName, Field * field, uint8_t * data, size_t 
 
 void setSystemClock(uint16_t currentDate, uint32_t currentTime)
 {
-
 #ifndef SKIP_SETSYSTEMCLOCK
-  static uint16_t prevDate = UINT16_MAX;
-  static uint32_t prevTime = UINT32_MAX;
-  const uint32_t unitspersecond = 10000;
-  const uint32_t microsperunit = 100;
-  const uint32_t microspersecond = 1000000;
-  const uint32_t secondsperday = 86400;
-  struct timeval now;
-  struct timeval gps;
-  struct timeval delta;
-  struct timeval olddelta;
+  static uint16_t prevDate        = UINT16_MAX;
+  static uint32_t prevTime        = UINT32_MAX;
+  const uint32_t  unitspersecond  = 10000;
+  const uint32_t  microsperunit   = 100;
+  const uint32_t  microspersecond = 1000000;
+  const uint32_t  secondsperday   = 86400;
+  struct timeval  now;
+  struct timeval  gps;
+  struct timeval  delta;
+  struct timeval  olddelta;
 
 #ifdef HAS_ADJTIME
   const int maxDelta = 30;
@@ -1313,26 +1396,26 @@ void setSystemClock(uint16_t currentDate, uint32_t currentTime)
     return;
   }
 
-  gps.tv_sec = currentDate * secondsperday + currentTime / unitspersecond;
+  gps.tv_sec  = currentDate * secondsperday + currentTime / unitspersecond;
   gps.tv_usec = (currentTime % unitspersecond) * microsperunit;
 
   if (gps.tv_sec < now.tv_sec - maxDelta || gps.tv_sec > now.tv_sec + maxDelta)
   {
     if (settimeofday(&gps, 0))
     {
-      logError("Failed to adjust system clock to %"PRIu64"/%06u\n", (uint64_t) gps.tv_sec, gps.tv_usec);
+      logError("Failed to adjust system clock to %" PRIu64 "/%06u\n", (uint64_t) gps.tv_sec, gps.tv_usec);
       return;
     }
     if (showBytes)
     {
-      logInfo("Set system clock to %"PRIu64"/%06u\n", (uint64_t) gps.tv_sec, gps.tv_usec);
+      logInfo("Set system clock to %" PRIu64 "/%06u\n", (uint64_t) gps.tv_sec, gps.tv_usec);
     }
     return;
   }
 
 #ifdef HAS_ADJTIME
 
-  delta.tv_sec = 0;
+  delta.tv_sec  = 0;
   delta.tv_usec = gps.tv_usec - now.tv_usec + microspersecond * (gps.tv_sec - now.tv_sec);
 
   if (delta.tv_usec < 2000 && delta.tv_usec > -2000)
@@ -1352,12 +1435,12 @@ void setSystemClock(uint16_t currentDate, uint32_t currentTime)
 
   if (showBytes)
   {
-    logDebug("Now = %"PRIu64"/%06u ", (uint64_t) now.tv_sec, now.tv_usec);
-    logDebug("GPS = %"PRIu64"/%06u ", (uint64_t) gps.tv_sec, gps.tv_usec);
+    logDebug("Now = %" PRIu64 "/%06u ", (uint64_t) now.tv_sec, now.tv_usec);
+    logDebug("GPS = %" PRIu64 "/%06u ", (uint64_t) gps.tv_sec, gps.tv_usec);
     logDebug("Adjusting system clock by %d usec\n", delta.tv_usec);
     if (olddelta.tv_sec || olddelta.tv_usec)
     {
-      logDebug("(Old delta not yet completed %"PRIu64"/%d\n", (uint64_t) olddelta.tv_sec, olddelta.tv_usec);
+      logDebug("(Old delta not yet completed %" PRIu64 "/%d\n", (uint64_t) olddelta.tv_sec, olddelta.tv_usec);
     }
   }
 
@@ -1373,7 +1456,7 @@ static void print_ascii_json_escaped(uint8_t *data, int len)
   for (k = 0; k < len; k++)
   {
     c = data[k];
-    switch(c)
+    switch (c)
     {
       case '\b':
         mprintf("%s", "\\b");
@@ -1419,13 +1502,13 @@ static void print_ascii_json_escaped(uint8_t *data, int len)
   }
 }
 
-void printPacket(size_t index, size_t unknownIndex, RawMessage * msg)
+void printPacket(size_t index, size_t unknownIndex, RawMessage *msg)
 {
-  size_t fastPacketIndex;
-  size_t bucket;
-  Packet * packet;
-  Pgn * pgn = &pgnList[index];
-  size_t subIndex;
+  size_t  fastPacketIndex;
+  size_t  bucket;
+  Packet *packet;
+  Pgn *   pgn = &pgnList[index];
+  size_t  subIndex;
 
   if (!device[msg->src])
   {
@@ -1451,12 +1534,13 @@ void printPacket(size_t index, size_t unknownIndex, RawMessage * msg)
     }
   }
 
-  if (msg->len > 0x8 || format != RAWFORMAT_PLAIN)
+  if (msg->len > 0x8 || multiPackets == MULTIPACKETS_COALESCED)
   {
     if (packet->allocSize < msg->len)
     {
       heapSize += msg->len - packet->allocSize;
-      logDebug("Resizing buffer for PGN %u device %u to accomodate %u bytes (heap %zu bytes)\n", pgn->pgn, msg->src, msg->len, heapSize);
+      logDebug(
+          "Resizing buffer for PGN %u device %u to accomodate %u bytes (heap %zu bytes)\n", pgn->pgn, msg->src, msg->len, heapSize);
       packet->data = realloc(packet->data, msg->len);
       if (!packet->data)
       {
@@ -1464,16 +1548,13 @@ void printPacket(size_t index, size_t unknownIndex, RawMessage * msg)
       }
       packet->allocSize = msg->len;
     }
-    memcpy( packet->data
-          , msg->data
-          , msg->len
-          );
+    memcpy(packet->data, msg->data, msg->len);
     packet->size = msg->len;
   }
-  else if (pgn->size > 0x8)
+  else if (pgn->type == PACKET_FAST)
   {
     fastPacketIndex = msg->data[FASTPACKET_INDEX];
-    bucket = fastPacketIndex & FASTPACKET_MAX_INDEX;
+    bucket          = fastPacketIndex & FASTPACKET_MAX_INDEX;
 
     if (bucket == 0)
     {
@@ -1482,7 +1563,11 @@ void printPacket(size_t index, size_t unknownIndex, RawMessage * msg)
       if (packet->allocSize < newSize)
       {
         heapSize += newSize - packet->allocSize;
-        logDebug("Resizing buffer for PGN %u device %u to accomodate %zu bytes (heap %zu bytes)\n", pgn->pgn, msg->src, newSize, heapSize);
+        logDebug("Resizing buffer for PGN %u device %u to accomodate %zu bytes (heap %zu bytes)\n",
+                 pgn->pgn,
+                 msg->src,
+                 newSize,
+                 heapSize);
         packet->data = realloc(packet->data, newSize);
         if (!packet->data)
         {
@@ -1491,24 +1576,22 @@ void printPacket(size_t index, size_t unknownIndex, RawMessage * msg)
         packet->allocSize = newSize;
       }
       packet->size = msg->data[FASTPACKET_SIZE];
-      memcpy( packet->data
-            , msg->data + FASTPACKET_BUCKET_0_OFFSET
-            , FASTPACKET_BUCKET_0_SIZE
-            );
+      memcpy(packet->data, msg->data + FASTPACKET_BUCKET_0_OFFSET, FASTPACKET_BUCKET_0_SIZE);
     }
     else
     {
       if (packet->lastFastPacket + 1 != fastPacketIndex)
       {
-        logError("PGN %u malformed packet for %u received; expected %zu but got %zu\n"
-                , pgn->pgn, msg->src, packet->lastFastPacket + 1, fastPacketIndex
-                );
+        logError("PGN %u malformed packet from %u received; expected %zu but got %zu\n",
+                 pgn->pgn,
+                 msg->src,
+                 packet->lastFastPacket + 1,
+                 fastPacketIndex);
         return;
       }
-      memcpy( packet->data + FASTPACKET_BUCKET_0_SIZE + FASTPACKET_BUCKET_N_SIZE * (bucket - 1)
-            , msg->data + FASTPACKET_BUCKET_N_OFFSET
-            , FASTPACKET_BUCKET_N_SIZE
-            );
+      memcpy(packet->data + FASTPACKET_BUCKET_0_SIZE + FASTPACKET_BUCKET_N_SIZE * (bucket - 1),
+             msg->data + FASTPACKET_BUCKET_N_OFFSET,
+             FASTPACKET_BUCKET_N_SIZE);
     }
     packet->lastFastPacket = fastPacketIndex;
 
@@ -1518,24 +1601,21 @@ void printPacket(size_t index, size_t unknownIndex, RawMessage * msg)
       return;
     }
   }
-  else /* msg->len <= 8 && pgn->size <= 0x8 */
+  else
   {
     packet->size = msg->len;
-    memcpy( packet->data
-          , msg->data
-          , msg->len
-          );
+    memcpy(packet->data, msg->data, msg->len);
   }
 
   printPgn(msg, packet->data, packet->size, showData, showJson);
 }
 
-bool printCanFormat(RawMessage * msg)
+static bool printCanFormat(RawMessage *msg)
 {
   size_t i;
   size_t unknownIndex = 0;
 
-  if (onlySrc >=0 && onlySrc != msg->src)
+  if (onlySrc >= 0 && onlySrc != msg->src)
   {
     return false;
   }
@@ -1579,7 +1659,6 @@ bool printCanFormat(RawMessage * msg)
   return onlyPgn > 0;
 }
 
-
 static void explainPGN(Pgn pgn)
 {
   int i;
@@ -1588,7 +1667,9 @@ static void explainPGN(Pgn pgn)
 
   if (pgn.repeatingFields >= 100)
   {
-    printf("     The last %u and %u fields repeat until the data is exhausted.\n\n", pgn.repeatingFields % 100, pgn.repeatingFields / 100);
+    printf("     The last %u and %u fields repeat until the data is exhausted.\n\n",
+           pgn.repeatingFields % 100,
+           pgn.repeatingFields / 100);
   }
   else if (pgn.repeatingFields)
   {
@@ -1597,9 +1678,11 @@ static void explainPGN(Pgn pgn)
   for (i = 0; i < ARRAY_SIZE(pgn.fieldList) && pgn.fieldList[i].name; i++)
   {
     Field f = pgn.fieldList[i];
-    printf("  Field #%d: %s%s%s\n", i + 1, f.name
-      , f.name[0] && (f.description && f.description[0] && f.description[0] != ',') ? " - " : ""
-      , (!f.description || f.description[0] == ',') ? "" :  f.description);
+    printf("  Field #%d: %s%s%s\n",
+           i + 1,
+           f.name,
+           f.name[0] && (f.description && f.description[0] && f.description[0] != ',') ? " - " : "",
+           (!f.description || f.description[0] == ',') ? "" : f.description);
     if (!f.size)
     {
       printf("                  Bits: variable\n");
@@ -1653,7 +1736,7 @@ static void explainPGN(Pgn pgn)
 
     if ((f.resolution == RES_LOOKUP || f.resolution == RES_BITFIELD) && f.units && f.units[0] == ',')
     {
-      char * s, * e;
+      char *s, *e;
 
       for (s = f.units + 1;; s = e + 1)
       {
@@ -1666,91 +1749,141 @@ static void explainPGN(Pgn pgn)
         }
       }
     }
-
   }
 
   printf("\n\n");
 }
 
-static void explainPGNXML(Pgn pgn)
+/*
+ * Print string but replace special characters by their XML entity.
+ */
+static void printXML(int indent, const char *element, const char *p)
 {
   int i;
+
+  if (p)
+  {
+    for (i = 0; i < indent; i++)
+    {
+      fputs(" ", stdout);
+    }
+    printf("<%s>", element);
+    for (; *p; p++)
+    {
+      switch (*p)
+      {
+        case '&':
+          fputs("&amp;", stdout);
+          break;
+
+        case '<':
+          fputs("&lt;", stdout);
+          break;
+
+        case '>':
+          fputs("&gt;", stdout);
+          break;
+
+        case '"':
+          fputs("&quot;", stdout);
+          break;
+
+        default:
+          putchar(*p);
+      }
+    }
+    printf("</%s>\n", element);
+  }
+}
+
+static void explainPGNXML(Pgn pgn)
+{
+  int      i;
   unsigned bitOffset = 0;
-  char * p;
-  bool showBitOffset = true;
+  char *   p;
+  bool     showBitOffset = true;
 
   printf("    <PGNInfo>\n"
-         "       <PGN>%u</PGN>\n"
-         "       <Id>%s</Id>\n"
-         "       <Description>"
-         , pgn.pgn
-         , pgn.camelDescription
-         );
+         "      <PGN>%u</PGN>\n",
+         pgn.pgn);
+  printXML(6, "Id", pgn.camelDescription);
+  printXML(6, "Description", pgn.description);
+  printXML(6, "Type", (pgn.type == PACKET_ISO11783 ? "ISO" : (pgn.type == PACKET_FAST ? "Fast" : "Single")));
+  printf("      <Complete>%s</Complete>\n", (pgn.complete == PACKET_COMPLETE ? "true" : "false"));
 
-  for (p = pgn.description; p && *p; p++)
+  if (pgn.complete != PACKET_COMPLETE)
   {
-    if (*p != '&')
+    printf("      <Missing>\n");
+
+    if ((pgn.complete & PACKET_FIELDS_UNKNOWN) != 0)
     {
-      putchar(*p);
+      printXML(8, "MissingAttribute", "Fields");
     }
-    else
+    if ((pgn.complete & PACKET_FIELD_LENGTHS_UNKNOWN) != 0)
     {
-      fputs("&amp;", stdout);
+      printXML(8, "MissingAttribute", "FieldLengths");
     }
+    if ((pgn.complete & PACKET_PRECISION_UNKNOWN) != 0)
+    {
+      printXML(8, "MissingAttribute", "Precision");
+    }
+    if ((pgn.complete & PACKET_LOOKUPS_UNKNOWN) != 0)
+    {
+      printXML(8, "MissingAttribute", "Lookups");
+    }
+    if ((pgn.complete & PACKET_NOT_SEEN) != 0)
+    {
+      printXML(8, "MissingAttribute", "SampleData");
+    }
+
+    printf("      </Missing>\n");
   }
 
-  printf("</Description>\n"
-         "       <Complete>%s</Complete>\n"
-         "       <Length>%u</Length>\n"
-         , (pgn.known ? "true" : "false")
-         , pgn.size
-         );
+  printf("      <Length>%u</Length>\n", pgn.size);
 
   if (pgn.repeatingFields >= 100)
   {
-    printf("       <RepeatingFieldSet1>%u</RepeatingFieldSet1>\n", pgn.repeatingFields % 100);
-    printf("       <RepeatingFieldSet2>%u</RepeatingFieldSet2>\n", pgn.repeatingFields / 100);
+    printf("      <RepeatingFieldSet1>%u</RepeatingFieldSet1>\n", pgn.repeatingFields % 100);
+    printf("      <RepeatingFieldSet2>%u</RepeatingFieldSet2>\n", pgn.repeatingFields / 100);
   }
   else
   {
-    printf("       <RepeatingFields>%u</RepeatingFields>\n", pgn.repeatingFields);
+    printf("      <RepeatingFields>%u</RepeatingFields>\n", pgn.repeatingFields);
   }
-
-
 
   if (pgn.fieldList[0].name)
   {
-    printf("       <Fields>\n");
+    printf("      <Fields>\n");
 
     for (i = 0; i < ARRAY_SIZE(pgn.fieldList) && pgn.fieldList[i].name; i++)
     {
       Field f = pgn.fieldList[i];
 
-
-      printf("         <Field>\n"
-             "           <Order>%d</Order>\n"
-             "           <Id>%s</Id>\n"
-             "           <Name>%s</Name>\n", i + 1, f.camelName, f.name);
+      printf("        <Field>\n"
+             "          <Order>%d</Order>\n",
+             i + 1);
+      printXML(10, "Id", f.camelName);
+      printXML(10, "Name", f.name);
 
       if (f.description && f.description[0] && f.description[0] != ',')
       {
-        printf("           <Description>%s</Description>\n", f.description);
+        printXML(10, "Description", f.description);
       }
-      printf("           <BitLength>%u</BitLength>\n", f.size);
+      printf("          <BitLength>%u</BitLength>\n", f.size);
       if (showBitOffset)
       {
-        printf("           <BitOffset>%u</BitOffset>\n", bitOffset);
+        printf("          <BitOffset>%u</BitOffset>\n", bitOffset);
       }
-      printf("           <BitStart>%u</BitStart>\n", bitOffset % 8);
+      printf("          <BitStart>%u</BitStart>\n", bitOffset % 8);
       bitOffset = bitOffset + f.size;
 
       if (f.units && f.units[0] == '=')
       {
-        printf("           <Match>%s</Match>\n", &f.units[1]);
+        printf("          <Match>%s</Match>\n", &f.units[1]);
       }
       else if (f.units && f.units[0] != ',')
       {
-        printf("           <Units>%s</Units>\n", f.units);
+        printf("          <Units>%s</Units>\n", f.units);
       }
 
       if (f.resolution < 0.0)
@@ -1758,39 +1891,39 @@ static void explainPGNXML(Pgn pgn)
         Resolution t = types[-1 * (int) f.resolution - 1];
         if (t.name)
         {
-          printf("                  <Type>%s</Type>\n", t.name);
+          printf("                 <Type>%s</Type>\n", t.name);
         }
         if (t.resolution)
         {
-          printf("                  <Resolution>%s</Resolution>\n", t.resolution);
+          printf("                 <Resolution>%s</Resolution>\n", t.resolution);
         }
         else if (f.resolution == RES_LATITUDE || f.resolution == RES_LONGITUDE)
         {
           if (f.size == BYTES(8))
           {
-            printf("                  <Resolution>%.16f</Resolution>\n", 1e-16);
+            printf("                 <Resolution>%.16f</Resolution>\n", 1e-16);
           }
           else
           {
-            printf("                  <Resolution>%.7f</Resolution>\n", 1e-7);
+            printf("                 <Resolution>%.7f</Resolution>\n", 1e-7);
           }
         }
       }
       else if (f.resolution != 1.0)
       {
-        printf("           <Resolution>%g</Resolution>\n", f.resolution);
+        printf("          <Resolution>%g</Resolution>\n", f.resolution);
       }
-      printf("           <Signed>%s</Signed>\n", f.hasSign ? "true" : "false");
+      printf("          <Signed>%s</Signed>\n", f.hasSign ? "true" : "false");
       if (f.offset != 0)
       {
-        printf("           <Offset>%d</Offset>\n", f.offset);
+        printf("          <Offset>%d</Offset>\n", f.offset);
       }
 
       if (f.resolution == RES_LOOKUP && f.units && f.units[0] == ',')
       {
-        char * s, * e, * p;
+        char *s, *e, *p;
 
-        printf("           <EnumValues>\n");
+        printf("          <EnumValues>\n");
 
         for (s = f.units + 1;; s = e + 1)
         {
@@ -1799,7 +1932,7 @@ static void explainPGNXML(Pgn pgn)
           p = strchr(s, '=');
           if (p)
           {
-            printf("             <EnumPair Value='%.*s' Name='%.*s' />\n", (int) (p - s), s, (int) (e - (p + 1)), p + 1);
+            printf("            <EnumPair Value='%.*s' Name='%.*s' />\n", (int) (p - s), s, (int) (e - (p + 1)), p + 1);
           }
           if (!*e)
           {
@@ -1807,14 +1940,14 @@ static void explainPGNXML(Pgn pgn)
           }
         }
 
-        printf("           </EnumValues>\n");
+        printf("          </EnumValues>\n");
       }
 
       if (f.resolution == RES_BITFIELD && f.units && f.units[0] == ',')
       {
-        char * s, * e, * p;
+        char *s, *e, *p;
 
-        printf("           <EnumBitValues>\n");
+        printf("          <EnumBitValues>\n");
 
         for (s = f.units + 1;; s = e + 1)
         {
@@ -1823,7 +1956,7 @@ static void explainPGNXML(Pgn pgn)
           p = strchr(s, '=');
           if (p)
           {
-            printf("             <EnumPair Bit='%.*s' Name='%.*s' />\n", (int) (p - s), s, (int) (e - (p + 1)), p + 1);
+            printf("            <EnumPair Bit='%.*s' Name='%.*s' />\n", (int) (p - s), s, (int) (e - (p + 1)), p + 1);
           }
           if (!*e)
           {
@@ -1831,32 +1964,32 @@ static void explainPGNXML(Pgn pgn)
           }
         }
 
-        printf("           </EnumBitValues>\n");
+        printf("          </EnumBitValues>\n");
       }
 
       if (f.resolution == RES_STRINGLZ || f.resolution == RES_STRINGLAU)
       {
         showBitOffset = false; // From here on there is no good bitoffset to be printed
       }
-      printf("         </Field>\n");
+      printf("        </Field>\n");
     }
-    printf("       </Fields>\n");
+    printf("      </Fields>\n");
   }
   printf("    </PGNInfo>\n");
 }
 
-void explain(void)
+static void explain(void)
 {
   int i;
 
-  printf(COPYRIGHT"\n\nThis program can understand a number of N2K messages. What follows is an explanation of the messages\n"
-         "that it understands. First is a list of completely understood messages, as far as I can tell.\n"
-         "What follows is a list of messages that contain fields that have unknown content or size, or even\n"
-         "completely unknown fields. If you happen to know more, please tell me!\n\n");
+  printf(COPYRIGHT "\n\nThis program can understand a number of N2K messages. What follows is an explanation of the messages\n"
+                   "that it understands. First is a list of completely understood messages, as far as I can tell.\n"
+                   "What follows is a list of messages that contain fields that have unknown content or size, or even\n"
+                   "completely unknown fields. If you happen to know more, please tell me!\n\n");
   printf("_______ Complete PGNs _________\n\n");
   for (i = 1; i < ARRAY_SIZE(pgnList); i++)
   {
-    if (pgnList[i].known == true && pgnList[i].pgn < ACTISENSE_BEM)
+    if (pgnList[i].complete == PACKET_COMPLETE && pgnList[i].pgn < ACTISENSE_BEM)
     {
       explainPGN(pgnList[i]);
     }
@@ -1864,20 +1997,19 @@ void explain(void)
   printf("_______ Incomplete PGNs _________\n\n");
   for (i = 1; i < ARRAY_SIZE(pgnList); i++)
   {
-    if (pgnList[i].known == false && pgnList[i].pgn < ACTISENSE_BEM)
+    if (pgnList[i].complete != PACKET_COMPLETE && pgnList[i].pgn < ACTISENSE_BEM)
     {
       explainPGN(pgnList[i]);
     }
   }
-
 }
 
-char * camelize(const char *str, bool upperCamelCase)
+char *camelize(const char *str, bool upperCamelCase)
 {
-  size_t len = strlen(str);
-  char *ptr = malloc(len + 1);
-  char *s = ptr;
-  bool lastIsAlpha = !upperCamelCase;
+  size_t len         = strlen(str);
+  char * ptr         = malloc(len + 1);
+  char * s           = ptr;
+  bool   lastIsAlpha = !upperCamelCase;
 
   if (!s)
   {
@@ -1894,7 +2026,7 @@ char * camelize(const char *str, bool upperCamelCase)
       }
       else
       {
-        *s = toupper(*str);
+        *s          = toupper(*str);
         lastIsAlpha = true;
       }
       s++;
@@ -1909,7 +2041,7 @@ char * camelize(const char *str, bool upperCamelCase)
   return ptr;
 }
 
-void camelCase(bool upperCamelCase)
+static void camelCase(bool upperCamelCase)
 {
   int i, j;
 
@@ -1923,18 +2055,19 @@ void camelCase(bool upperCamelCase)
   }
 }
 
-void explainXML(void)
+static void explainXML(void)
 {
   int i;
 
   printf("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
-    "<!--\n"COPYRIGHT"\n-->\n"
-    "<PGNDefinitions xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" Version=\"0.1\">\n"
-    "  <Comment>See https://github.com/canboat/canboat for the full source code</Comment>\n"
-    "  <CreatorCode>Canboat NMEA2000 Analyzer</CreatorCode>\n"
-    "  <License>GPL v3</License>\n"
-    "  <PGNs>\n"
-    );
+         "<!--\n" COPYRIGHT "\n-->\n"
+         "<PGNDefinitions xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" "
+         "Version=\"0.1\">\n"
+         "  <Comment>See https://github.com/canboat/canboat for the full source code</Comment>\n"
+         "  <CreatorCode>Canboat NMEA2000 Analyzer</CreatorCode>\n"
+         "  <License>GPL v3</License>\n"
+         "  <Version>" VERSION "</Version>\n"
+         "  <PGNs>\n");
 
   for (i = 1; i < ARRAY_SIZE(pgnList); i++)
   {
@@ -1945,44 +2078,47 @@ void explainXML(void)
   }
 
   printf("  </PGNs>\n"
-    "</PGNDefinitions>\n");
+         "</PGNDefinitions>\n");
 }
 
-bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bool showJson) {
+bool printPgn(RawMessage *msg, uint8_t *dataStart, int length, bool showData, bool showJson)
+{
   Pgn *pgn;
 
-  uint8_t * data;
+  uint8_t *data;
 
-  uint8_t * dataEnd = dataStart + length;
-  size_t i;
-  Field field;
-  size_t bits;
-  size_t bytes;
-  size_t startBit;
+  uint8_t *dataEnd = dataStart + length;
+  size_t   i;
+  Field    field;
+  size_t   bits;
+  size_t   bytes;
+  size_t   startBit;
   int      repetition = 0;
   uint16_t valueu16;
   uint32_t valueu32;
   uint16_t currentDate = UINT16_MAX;
   uint32_t currentTime = UINT32_MAX;
-  char fieldName[60];
-  bool r;
+  char     fieldName[60];
+  bool     r;
   uint32_t refPgn = 0;
   uint32_t variableFieldCount[2]; // How many variable fields over all repetitions, indexed by group
   uint32_t variableFields[2];     // How many variable fields per repetition, indexed by group
-  size_t variableFieldStart;
+  size_t   variableFieldStart;
 
-  if (!msg) {
+  if (!msg)
+  {
     return false;
   }
-  pgn  = getMatchingPgn(msg->pgn, dataStart, length);
-  if (!pgn) {
+  pgn = getMatchingPgn(msg->pgn, dataStart, length);
+  if (!pgn)
+  {
     pgn = pgnList;
   }
 
   if (showData)
   {
-    FILE * f = stdout;
-    char c = ' ';
+    FILE *f = stdout;
+    char  c = ' ';
 
     if (showJson)
     {
@@ -2009,7 +2145,13 @@ bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bo
     {
       mprintf("\"%s\":", pgn->camelDescription);
     }
-    mprintf("{\"timestamp\":\"%s\",\"prio\":%u,\"src\":%u,\"dst\":%u,\"pgn\":%u,\"description\":\"%s\"", msg->timestamp, msg->prio, msg->src, msg->dst, msg->pgn, pgn->description);
+    mprintf("{\"timestamp\":\"%s\",\"prio\":%u,\"src\":%u,\"dst\":%u,\"pgn\":%u,\"description\":\"%s\"",
+            msg->timestamp,
+            msg->prio,
+            msg->src,
+            msg->dst,
+            msg->pgn,
+            pgn->description);
     strcpy(closingBraces, "}");
     sep = ",\"fields\":{";
   }
@@ -2019,9 +2161,10 @@ bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bo
     sep = " ";
   }
 
-  g_variableFieldRepeat[0] = 0;
-  g_variableFieldRepeat[1] = 0;
-  g_variableFieldIndex = 0;
+  g_variableFieldRepeat[0] = 255; // Can be overridden by '# of parameters'
+  g_variableFieldRepeat[1] = 0;   // Can be overridden by '# of parameters'
+  g_variableFieldIndex     = 0;
+
   if (pgn->repeatingFields >= 100)
   {
     variableFieldCount[0] = pgn->repeatingFields % 100;
@@ -2032,12 +2175,13 @@ bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bo
     variableFieldCount[0] = pgn->repeatingFields % 100;
     variableFieldCount[1] = 0;
   }
+
   variableFieldStart = pgn->fieldCount - variableFieldCount[0] - variableFieldCount[1];
   logDebug("fieldCount=%d variableFieldStart=%d\n", pgn->fieldCount, variableFieldStart);
 
   for (i = 0, startBit = 0, data = dataStart; data < dataEnd; i++)
   {
-    Field* field;
+    Field *field;
     r = true;
 
     if (variableFieldCount[0] && i == variableFieldStart && repetition == 0)
@@ -2053,7 +2197,7 @@ bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bo
       variableFields[0] = variableFieldCount[0] * g_variableFieldRepeat[0];
       variableFields[1] = variableFieldCount[1] * g_variableFieldRepeat[1];
     }
-    if (repetition)
+    if (repetition > 0)
     {
       if (variableFields[0])
       {
@@ -2118,7 +2262,7 @@ bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bo
 
     bits  = field->size;
     bytes = (bits + 7) / 8;
-    bytes = min(bytes, (size_t) (dataEnd - data));
+    bytes = min(bytes, (size_t)(dataEnd - data));
     bits  = min(bytes * 8, bits);
 
     if (showBytes)
@@ -2173,7 +2317,7 @@ bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bo
 
       if (field->resolution == RES_ASCII)
       {
-        len = (int) bytes;
+        len                    = (int) bytes;
         unsigned char lastbyte = data[len - 1];
 
         if (lastbyte == 0xff || lastbyte == ' ' || lastbyte == 0 || lastbyte == '@')
@@ -2184,7 +2328,7 @@ bool printPgn(RawMessage* msg, uint8_t *dataStart, int length, bool showData, bo
           }
         }
 
-ascii_string:
+      ascii_string:
         if (showBytes)
         {
           for (k = 0; k < len; k++)
@@ -2225,7 +2369,6 @@ ascii_string:
         {
           mprintf("\"");
         }
-
       }
       else if (field->resolution == RES_STRING)
       {
@@ -2233,7 +2376,8 @@ ascii_string:
         if (*data == 0x02)
         {
           data++;
-          for (len = 0; data + len < dataEnd && data[len] != 0x01; len++);
+          for (len = 0; data + len < dataEnd && data[len] != 0x01; len++)
+            ;
           bytes = len + 1;
         }
         else if (*data > 0x02)
@@ -2250,7 +2394,7 @@ ascii_string:
         else
         {
           bytes = 1;
-          len = 0;
+          len   = 0;
         }
         if (len)
         {
@@ -2271,13 +2415,13 @@ ascii_string:
       }
       else if (field->resolution == RES_DATE)
       {
-        memcpy((void *) &valueu16, data, 2);
+        valueu16 = data[0] + (data[1] << 8);
         printDate(fieldName, valueu16);
         currentDate = valueu16;
       }
       else if (field->resolution == RES_TIME)
       {
-        memcpy((void *) &valueu32, data, 4);
+        valueu32 = data[0] + (data[1] << 8) + (data[2] << 16) + (data[3] << 24);
         printTime(fieldName, valueu32);
         currentTime = valueu32;
       }
@@ -2322,12 +2466,8 @@ ascii_string:
       {
         printHex(fieldName, data, startBit, bits);
       }
-      else if (field->resolution == RES_INTEGER
-            || field->resolution == RES_LOOKUP
-            || field->resolution == RES_BITFIELD
-            || field->resolution == RES_BINARY
-            || field->resolution == RES_MANUFACTURER
-              )
+      else if (field->resolution == RES_INTEGER || field->resolution == RES_LOOKUP || field->resolution == RES_BITFIELD
+               || field->resolution == RES_BINARY || field->resolution == RES_MANUFACTURER)
       {
         printNumber(fieldName, field, data, startBit, bits);
       }
