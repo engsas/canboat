@@ -1,2 +1,1 @@
-usr/etc/default/* /etc/default/*
-
+/etc/default/* /etc/default/*
