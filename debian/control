@@ -2,7 +2,9 @@ Source: n2kd
 Section: misc
 Priority: optional
 Maintainer: EngSaS - Joachim Langenbach <info@engsas.de>
-Build-Depends: debhelper (>= 10), xsltproc
+Build-Depends: debhelper (>= 10),
+               xsltproc,
+               psmisc
 Standards-Version: 4.5.0
 Homepage: https://github.com/canboat/canboat
 #Vcs-Git: https://github.com/canboat/canboat.git
