@@ -4,7 +4,7 @@ Source: https://github.com/canboat/canboat
 
 Files: *
 Copyright: 2009-2015, Kees Verruijt, Harlingen, The Netherlands.
-License: GPL
+License: GPL-3
 
 Files: analyzer/pgns2json.xslt
 Copyright: 2006,2008 Doeke Zanstra
@@ -12,22 +12,22 @@ License: BSD-2-clause
 
 Files: debian/*
 Copyright: 2017 - 2020, Joachim Langenbach <joachim.langenbach@engsas.de>
-License: GPL
+License: GPL-3
 
-License: GPL
+License: GPL-3
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
-
+ .
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  GNU General Public License for more details.
-
+ .
  On Debian systems, the full text of the GNU General Public
  License can be found in the file
- `/usr/share/common-licenses/GPL'.
+ `/usr/share/common-licenses/GPL-3'.
 
 License BSD-2-clause
  Redistribution and use in source and binary forms, with or without
