@@ -7,3 +7,7 @@ usr/bin/n2kd
 usr/bin/nmea0183-serial
 usr/bin/request-group-function
 usr/bin/socketcan-writer
+usr/share/man/man1/command-group-function.1
+usr/share/man/man1/iptee.1
+usr/share/man/man1/n2kd.1
+usr/share/man/man1/request-group-function.1
