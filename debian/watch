@@ -1,7 +1,0 @@
-version=3
-opts=\
-dversionmangle=s/\+(debian|dfsg|ds|deb)(\.?\d+)?$//,\
-uversionmangle=s/(\d)[_\.\-\+]?((RC|rc|pre|dev|beta|alpha)\d*)$/$1~$2/,\
-filenamemangle=s/(?:.*?\/)?(?:rel|r|v|canboat)?[\-\_]?(\d\S+)\.(tgz|tbz|txz|(?:tar\.(?:gz|bz2|xz)))/canboat-$1.$2/ \
-https://github.com/canboat/canboat/tags \
-(?:.*/archive/)?(?:rel|r|v|canboat)?[\-\_]?(\d\S+(?<!post\d))\.(?:tgz|tbz|txz|(?:tar\.(?:gz|bz2|xz)))
