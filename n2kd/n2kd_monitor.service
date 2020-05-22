@@ -1,5 +1,6 @@
 [Unit]
 Description=n2kd Monitor service
+Documentation=https://github.com/canboat/canboat/wiki/n2kd_monitor
 After=network.target
 
 [Service]
