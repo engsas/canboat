@@ -5723,8 +5723,8 @@
             "Signed":false}]},
       {
         "PGN":126720,
-        "Id":"seatalk1DeviceIndentification",
-        "Description":"Seatalk1: Device Indentification",
+        "Id":"seatalk1DeviceIdentification",
+        "Description":"Seatalk1: Device Identification",
         "Type":"Fast",
         "Complete":false,
         "Missing":[
@@ -14866,8 +14866,8 @@
             "Signed":false},
           {
             "Order":5,
-            "Id":"aisTranceiverInformation",
-            "Name":"AIS Tranceiver Information",
+            "Id":"aisTransceiverInformation",
+            "Name":"AIS Transceiver Information",
             "BitLength":8,
             "BitOffset":48,
             "BitStart":0,

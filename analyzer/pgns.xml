@@ -6452,8 +6452,8 @@ along with CANboat.  If not, see <http://www.gnu.org/licenses/>.
     </PGNInfo>
     <PGNInfo>
       <PGN>126720</PGN>
-      <Id>seatalk1DeviceIndentification</Id>
-      <Description>Seatalk1: Device Indentification</Description>
+      <Id>seatalk1DeviceIdentification</Id>
+      <Description>Seatalk1: Device Identification</Description>
       <Type>Fast</Type>
       <Complete>false</Complete>
       <Missing>
@@ -16769,8 +16769,8 @@ along with CANboat.  If not, see <http://www.gnu.org/licenses/>.
         </Field>
         <Field>
           <Order>5</Order>
-          <Id>aisTranceiverInformation</Id>
-          <Name>AIS Tranceiver Information</Name>
+          <Id>aisTransceiverInformation</Id>
+          <Name>AIS Transceiver Information</Name>
           <BitLength>8</BitLength>
           <BitOffset>48</BitOffset>
           <BitStart>0</BitStart>
